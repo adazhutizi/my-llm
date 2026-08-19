@@ -1,0 +1,193 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+> **开发者向**(架构、踩坑、约定、测试);详细实现见代码注释与 `tests/`。使用者/部署文档(环境变量、API 示例、管理后台、Dedicated 代理、k8s)见 `README.md`。
+
+## 项目概述
+LLM API 网关 — 代理 OpenAI/Anthropic/DashScope,暴露 OpenAI 兼容与 Anthropic 兼容接口;中文管理后台管密钥/用户/应用/模型/服务商/配额/日志。
+
+## 开发命令
+pnpm(v11+) workspace:后端 + 前端(`web/`)。
+
+**后端**(Hono + Drizzle + MySQL):
+```bash
+pnpm dev                                          # tsx watch,:3000
+node --env-file=.env --import tsx src/index.ts    # 直接启动
+pnpm build                                        # tsup → dist/
+pnpm test                                         # vitest watch
+pnpm exec vitest run tests/x.test.ts              # 单文件
+pnpm db:gen                                       # 生成迁移(自动注入字段中文注释)
+pnpm db:migrate                                   # 执行迁移
+pnpm db:seed                                      # 初始数据(建 adm_sk_;生产非必须)
+```
+**启动后端别预检依赖**:直接 `pnpm dev`,不要 netstat/探测 Redis/MySQL(多为远程或 Docker)。看日志判断:`Starting LLM Gateway` 即成功,`exit(1)`/迁移报错才排查。
+
+**管理后台**(Next.js 16, React 19,静态导出):
+```bash
+pnpm --filter llm-gateway-dashboard dev       # :3001,代理 API 到 :3000
+pnpm --filter llm-gateway-dashboard build     # 静态导出 web/out/
+pnpm --filter llm-gateway-dashboard lint
+```
+生产前端由 Hono 在 `/dashboard/*` 托管。**坑**:`app.use('/dashboard/*', serveStatic(...))` 必须注册在 catch-all `app.all('/*', ...)` **之前**——否则登录页(无 Authorization 头)撞 `authMiddleware` 返 401 永远到不了静态文件(dev 走独立 :3001 不暴露此坑)。
+
+## 架构
+
+**核心文件地图**:`src/index.ts`=进程入口(initRedis → Redis 锁串行化迁移 → drizzle migrator → graceful shutdown);`src/app.ts`=Hono app 装配,**所有路由/中间件挂载顺序的坑都在此文件**(LLM 链 cors→requestId→requestLog→auth→rateLimit→quotaCheck→usageTrack→dedicatedProxy、catch-all `app.all('/*', ...)` 必须最后、`/admin/<name>` 子路由必须在 `app.route('/admin', adminQuotas)` 之前);`src/config/schema.ts`=Zod 配置真相源。
+
+### 进程启动
+`initRedis()` ping(强依赖,不通 `exit(1)`)→ Redis 分布式锁串行化迁移(多 pod 只一个跑)→ drizzle migrator(幂等)。脏库兜底:`__drizzle_migrations` 空但表已存在时 `ER_TABLE_EXISTS_ERROR` 吞掉继续。Graceful shutdown(SIGINT/TERM):停定时器 → 关 HTTP → 关 Redis → 关 DB。首启 `admin_users` 空时自动建 `admin` 超管 + 控制台打印随机密码。
+
+### 双协议转换
+三入口(`/openai/v1/chat/completions`、`/openai/v1/responses`、`/anthropic/v1/messages`)按**客户端协议族**(CC/Responses→`openai`、Messages→`anthropic`)与**上游 `provider.apiType`** 是否同族分两路径(上游族 = `apiType==='anthropic'?'anthropic':'openai'`):
+- **同族透传**(`src/services/passthrough.ts` `passthroughUpstream`):原样转发客户端请求(仅换虚拟 model→上游真实 model、凭证按上游族换值、剥代理 fingerprint 头),原样返回上游响应(含流式 SSE 裸字节)。不经 `Internal` 中转、不经适配器管线。URL 按 `clientProtocol` 拼:cc→`${baseUrl}/chat/completions`、responses→`${baseUrl}/responses`、anthropic→`${baseUrl}/v1/messages`。消除同族内无意义协议改写,修复 Internal 中转曾丢失的字段:CC 的 `n`/`seed`/`logprobs`/`response_format`/`tool_choice`、Responses 的 `previous_response_id`/`store`/`include`、Anthropic 的 content block 级 `cache_control`/`top_k`。
+- **跨族 Internal**:走 `InternalRequest/Response/StreamChunk` 互转 + Provider 适配器管线(`createProvider(apiType)` 实例化对族 provider:OpenAI 上游发 `/responses`、Anthropic 上游发 `/v1/messages`)。
+- 判定插在各路由 `resolveModel`+`getProviderConfig` 后、`createProvider` 前;**GatewayModel/智能分析桥接不走此判定**(固定 OpenAIProvider `/responses`)。
+
+**跨族归一化坑**(客户端协议特有结构必须归一化为 Internal/Anthropic 形态,否则字段丢失/上游拒;同族走 passthrough 不经此处不受影响):
+- **图片(vision)**:三协议 part 形态各异(CC `image_url`、Responses `input_image`、Anthropic `image.source`)→ Internal 用 Anthropic 风格 `{type:'image',source}`(`source` 支持 base64+url,**不在网关侧下载**)。归一化在 `src/utils/image-block.ts`(两路由输入侧 + OpenAIProvider 输出侧共用)。`detail` 跨族丢弃。
+- **Responses→Anthropic 空内容**:`responses.ts` `convertInputToMessages` 须把 content part 的 `input_text`/`output_text`(Responses SDK 默认结构化 input)归一化为内部 `text`,否则 Anthropic 忽略整条消息→空 content。
+- **CC→Anthropic 工具多轮残缺**:`chat-completions.ts` 须归一化:① CC assistant 顶层 `tool_calls`→content block `tool_use`(Internal/Anthropic 要 tool_use 在 content 中);② CC `{role:'tool',tool_call_id,content}`→`{role:'tool',content:[{type:'tool_result',tool_use_id,content}]}`。不归一则 `tool_calls`/`tool_call_id` 被丢→多轮 agent 链断裂(范式参照 responses.ts 顶层 `function_call`→tool_use、`function_call_output`→tool_result)。
+
+**三路径共用不变量**(同族 passthrough / dedicated / Internal 完全对齐):
+- **流式判定 = `upstreamRes.ok && contentType.includes('text/event-stream')`**:非 2xx 走非流式分支返真实 status——上游 429 可能带 text/event-stream content-type(某些 OpenAI 兼容端点对 stream 限流也用 SSE 包装),只看 content-type 会进 `stream()` 发 200 头转发错误 SSE→客户端 SDK 收 200+SSE 卡住。
+- **发上游 header 走 `src/utils/headers.ts` 三纯函数**(dedicated + 同族 passthrough 共用,消除两处漂移):`rawHeaderPairs(c)` 读 `c.env.incoming.rawHeaders`(**保留客户端原始字节大小写**,与日志存储同源;无则回退 WHATWG `Headers.entries()` 小写);`detectCredentialName(pairs)`(Authorization 优先/无则 x-api-key);`buildUpstreamHeaders(pairs, stripNames, rewrites)`(**rewrites 优先于 strip**——命中只换值不改 key,strip 剥代理 fingerprint/hop-by-hop/host/`content-length`(passthrough 重 stringify 换 model 后 body 变长,透传客户端原 content-length 会让上游按旧长度等数据永远收不齐→不返响应头→fetch 挂死→客户端「无响应」,kimi-k3 故障根因;dedicated 透传原 body 不改长度故不受影响),其余原样保留)。改写只换值不改 key = 与日志存储大小写口径一致(单测 `tests/headers.test.ts`;`app.request()` 不注入 `c.env.incoming`,集成测不到大小写,须 fake context+纯函数)。**坑**:rewrites 在客户端原样名上换值(不预设大写 `Content-Type`),避免大小写双 key 并存被 `fetch` Headers **append** 合成 `application/json, application/json` 被上游拒 `unsupported_content_type`(SDK 默认带 Content-Type 故影响面广)。
+- **流式 SSE 行解析用 `src/utils/sse-parse.ts` `parseSSEDataLines`**(与 `BaseProvider.stream()` 同口径):行首宽松匹配 `data:` 兼容无空格、逐行 try/catch 单行畸形不阻断、跳 `[DONE]`。原先各自 `startsWith('data: ')` 严格带空格对无空格上游(阿里云 DashScope)事件行**全过滤→终态 usage 漏提取→记账 token 全 0**。
+- **usage 拆 cache 提取**统一走 `src/services/usage-extract.ts`(`extractUsage`/`mergeStreamUsage`,dedicated 与 passthrough 共用);流式须覆盖四位置:CC 顶层 `usage`、Responses `response.usage`、Anthropic `message_delta` 顶层 `usage`、Anthropic `message_start` 的 `message.usage`(漏后者丢 input 侧 cache)。
+
+**已知边界**:Responses 客户端打只支持 CC 的上游(同族透传发 `/responses`)仍会 404(与现状一致,非回归);CC + DashScope(`apiType='openai'` 但兼容端点是 `/chat/completions`)从误发 `/responses` 改为发 `/chat/completions`(反而修复)。同族透传测试见 `tests/passthrough.test.ts`;三路由 Internal 测试已切到跨族场景(上游 `apiType` 设对族以走 Internal)。
+
+### 透传接口
+非 chat 类(`/openai/v1/embeddings`、`/openai/v1/images/generations`):网关做认证/限流/配额/日志,请求体原样转发(仅换虚拟模型名),响应原样返回;不走 `transformRequest`,直接构建 `UpstreamRequest` 复用 `BaseProvider.send()`。`GET /openai/v1/models` 纯本地查 `virtual_models`。
+
+### 中间件链(顺序重要)
+- **LLM 路由**(`/openai/*`、`/anthropic/*`):cors → requestId → requestLog → auth → rateLimit → quotaCheck → usageTrack → dedicatedProxy
+- **Catch-all**(`/*`,注册在所有特定路由后):同链,仅 dedicated 密钥生效
+- **管理路由**(`/admin/*`):auth → adminAuth(拒非 admin JWT)。`/admin/auth` 登录接口注册在管理中间件**之前**
+
+**坑**:`app.route()` 中所有 `/admin/<name>` 子路由必须注册在 `app.route('/admin', adminQuotas)` **之前**——`adminQuotas` 的 `/:type/:id` 捕获任意单段子路径(`/admin/settings`→`type=settings`)。新增 `/admin/<name>` 一律插在 quotas 那行之前。`quotaCheckMiddleware` 对 GET 跳过 token 预估;`extractMaxTokens()` 对 `/images/generations` 返 0。
+
+### 认证系统
+- **JWT**(`/admin/*`):HS256,默认 24h,localStorage;剩 <8h 滑动续期,`X-Renewed-Token` 头下发(**cors 须 `exposeHeaders` 该头**,否则 dev 跨域读不到)。
+- **API Key**:**明文存储+明文匹配**(`validateApiKey` 用 `eq(keySecret,明文)`,不走 bcrypt;脱库即全泄漏,已知 trade-off)。四模式:`usr_sk_`/`app_sk_`/`adm_sk_`/`ded_sk_`。带 `Enc` 后缀字段(`upstream_api_key_enc`/`providers.api_key_enc`)**实际明文**(历史命名)。头兼容 `Authorization Bearer` 与 `x-api-key`(后者兼容 Vercel AI SDK Anthropic provider)。标识头:`X-App-User-Id`(app 模式,自动建 app_users)、`X-Feature-Id`(纯透传无 DB 查询)。
+- **角色**:`super_admin`/`admin`,所有 `/admin/*` 对两角色开放,仅 `/admin/admins` 限超管。JWT 无状态(role 在 token 里),降级/删除后旧 token 过期前仍有效(默认 24h);即时失效需黑名单(未做)。超管保护:禁操作自己、禁降级/删最后超管、删除需先禁用;子管密码留空则系统生成(明文仅返一次)。
+- `requestLogMiddleware` 过滤 JWT 请求(`authMethod==='jwt'`)避免管理流量污染日志。管理员 API 密钥由 `ensureAdminKeyId()` 自动创建(配日志分析时),生产无需手动 seed。
+
+### 一对一代理(ded_sk_)
+`ded_sk_` 绑单个上游服务商,网关透传。路径/请求体/查询参数原样保留;**header 改写保留 key、保留客户端原始字节大小写**(走 `src/utils/headers.ts`,见「双协议转换」共用不变量);**流式判定同三路径共用**(`ok && text/event-stream`);**上游超时 `UPSTREAM_TIMEOUT_MS`=1h**(`src/providers/base.ts`,dedicated 与 Provider 管线共享,刻意设高让上游自返超时;Provider 管线可被 `virtual_models.extra.timeout` 覆盖;`AbortSignal.timeout()` 整体计时;**k8s 需 `terminationGracePeriodSeconds:3700`**,否则长流式被默认 30s SIGKILL)。`anthropic-version` 等协议头不自动补。`dedicatedProxyMiddleware` 对非 dedicated 密钥 no-op。
+- **坑:上游 key 来源是 `api_keys.upstream_api_key_enc`(该 key 自身字段),不是 `providers.api_key_enc`**(后者仅供 Provider 管线)。dedicated 绑 provider 只为取 `baseUrl` 的 **origin**(`new URL(baseUrl).origin`,剥任意路径后缀 `/v1`/`/api/v1`/任意前缀,只留 scheme+host+port)——使带后缀服务商能同时兼容 Provider 管线(完整 baseUrl 拼 `/responses`)与 dedicated 透传(客户端发完整路径,不与后缀叠双段);origin 无尾斜杠,顺带消「尾 `/`+开头 `/` 叠成 `//`」(`dedicated-proxy.ts` 拼 `${origin}${path}${query}`,非法 URL 回退原值)。
+- 每个 key 上游凭证独立配;创建侧强制 `providerId`+`upstreamApiKey`。stale keep-alive 连接错误自动重试。catch-all 使 dedicated 密钥可走任意路径。
+- **坑:dedicated 的 STRIP 不含 `content-length`,安全靠「不改 body」的隐式不变量**——dedicated 原样透传客户端 body(`c.req.text()`),透传的 content-length 与实际字节数始终匹配。**若将来在 dedicated 里改 body(换 model/剥字段),会复现 passthrough 同类挂死**:透传的旧 content-length 与新 body 字节数不符 → 上游按旧长度等数据永不收齐 → 不返响应头 → fetch 挂死 → 客户端「无响应」(根因见「双协议转换」共用不变量 content-length 段,kimi-k3 故障即此)。改 body 时必须同步把 `content-length` 加进 STRIP 让 fetch 重算,或直接改走 `passthroughUpstream`(已处理换 model + strip content-length)。与其余出口路径对比:Provider 管线 / embeddings / images / 分析 Agent 因 header 全新构造(不透传客户端 content-length)天然规避,唯独 dedicated 与 passthrough 透传客户端 header——passthrough 改 body 已修,dedicated 不改 body 故安全。
+
+### 请求日志
+- **requestId**:`requestIdMiddleware` 透传客户端 `X-Request-ID`(无则 uuidv4)并回显。
+- **坑:两表 `ON DUPLICATE KEY UPDATE` 去重**(`request_logs.request_id` 与 `request_details.request_id` 均 UNIQUE;`persistRequestLog`)。客户端重用同 ID 时后到覆盖旧行;`created_at` 不在 update set(保留首现);request_details 覆盖时重置 `archived_at=null, merged_into=null`。**改 `persistRequestLog` 务必保持 upsert**,否则回归重复行+两表不一致。
+- **坑:流式日志跳过判据 = `c.get('usage')` 是否存在,非 `requestBody.stream`**。所有流式 handler 故意不 `c.set('usage')`,`usage===undefined`="流式、callback 自记"。曾用 `requestBody.stream` 判据有坑(dedicated 按**上游响应 content-type** 分支,客户端 `stream:true` 但上游回非 SSE 错误时走非流式分支、设了 usage、却被跳过→`/logs` 看不到这条 429)。**特例**:Internal 流式 `streamSSE` 前 `openStream` 判定非 2xx 时,catch 分支 `c.set('usage',{...,isError:true})`+`return c.json(...)` 不开流→requestLog 按**非流式**落这条 429(见「Provider 适配器」)。
+- **客户端 IP**:`x-forwarded-for`(第一个)→`x-real-ip`→`c.env.incoming.socket.remoteAddress`。
+- **请求头原样记录**(`request_details.request_headers`,明文不脱敏):`captureRawRequestHeaders(c)` 读 `c.env.incoming.rawHeaders`(**保留原始大小写**;同名 header 按 `, ` 合并;无 incoming 回退小写 WHATWG——**单测见小写、生产见原始是预期**,勿按小写断言)。响应头来自 `upstreamRes.headers.entries()` 仍小写。**大小写口径与发上游 header 共用 `rawHeaderPairs`**。
+- **会话归档**:agentic loop 历史请求归并,每会话留最完整尾部 `request_details` 行,前驱行大字段置 null + `merged_into` 指向后继;`listLogs` LEFT JOIN 返回 `mergedInto` 供前端画合并箭头。
+  - 调度(`src/services/log-archive.ts`):启动立即 tick + 每小时,`log.archive.enabled`+`runHour`(**UTC**,默认 20=北京凌晨4点)+ 同日防重。两 Redis key:执行锁 `logarchive:run:<UTC日期>`(TTL1h,仅防并发,崩溃自过期)+ done 标记 `logarchive:done:<UTC日期>`(成功后才写)。失败/崩溃当天可重试。
+  - **超期物理删除**:`request_details` 用 `maxAgeDays`(默认30);`request_logs` 用 `logsRetentionDays`(默认180)。**两保留期可后台「系统设置」改**(`log.detailsRetentionDays`/`log.logsRetentionDays`)。须 `maxAgeDays > retentionDays`。
+  - 归并算法(`src/services/log-dedup.ts` `planArchive`):`stableStringify` 定序→`stripCacheControl`→按 apiKey 聚类→`isPrefix` 内容级严格前缀检查。按**请求体内容**(非路径)取指纹(`body.messages` 或 `body.input` item 数组);**路径无关是刻意**(dedicated 可走任意路径发 Responses 体)。item 指纹剥易变标识(`call_id`/`id`/`seq`)。
+  - **坑:归档扫描必须 `db.execute()` 原生 SQL + `FORCE INDEX (PRIMARY)`**(drizzle 构建器无法附索引提示;不加 filesort 撑爆 `sort_buffer_size` "Out of sort memory")。原生 execute 绕过列映射:bigint→`Number()`、json 列已解析、timestamp 返本地时间字符串须 `new Date()` 包装。
+  - **坑:Node 堆 OOM**——每页拉整页完整 `request_body` 进堆(单行可超 1MB),`batchSize` 默认 **200**(`config/schema.ts`,不暴露 env;`maxAgeDays` 例外可配)。
+- **坑:流式 callback 自记 `persistRequestLog` 四字段须齐**(`responseHeaders`+`responseBody`+`streamChunks`+`streamChunkCount`):非 dedicated 经 `provider.streamResponseHeaders` 取响应头、构建合成 `responseBody`(`{model,content,stream_chunk_count,usage}`,`content` 为累积 assistant 文本),dedicated 直接读 `upstreamRes.headers`、`mergedResponseBody` 同构。漏任一字段→日志详情对应列为空。**`streamChunks` 截断不对称**:dedicated `slice(-65535)`(后64KB),非 dedicated 三路由 `join('\n')`(全量不截断,长流式写超大列,对齐64KB是待办)。
+
+### 日志 AI 小结(`src/services/log-summary.ts`)
+对归并后完整 `request_body` 调 LLM 生成中文小结,按需生成 + Redis 缓存(TTL30天)。只对有完整 `request_body` 的行生效。
+- `generateLogSummary(c,requestId,force)`:未 force 先读 Redis→取 body→读 `system_settings` 分析模型配置(`SETTING_KEYS.logAnalysisProvider`/`logAnalysisModel`,未配返400)→复用 Provider 管线调上游 1M 窗口小模型。分片 map-reduce(`SHARD_THRESHOLD_TOKENS=600_000`,超限按字符切片)。
+- **可配总结模板**:默认 `DEFAULT_SUMMARY_PROMPT`,管理员可改(`SETTING_KEYS.logAnalysisPromptTemplate`);模板替换整体小结+分片 merge 阶段,分片 map 阶段用固定 `SHARD_SYSTEM_PROMPT`。PUT 模板字段**不 trim**(空白兜底靠后端 `|| DEFAULT`);改模板不触发 `ensureAdminKeyId`;旧缓存(30天)不失效,靠 force 重新生成。
+- **记账=自动 ensure admin key**(`ensureAdminKeyId()` 导出,幂等,`feature_id='log-analysis'`)。**坑:模块缓存 `cachedAdminKeyId` 只缓存命中(miss 不缓存)**,否则启动后新建的 key 被 stale null 遮蔽。记账手写库:`request_headers` 刻意 NULL(不落 admin JWT),`request_body` 只存元信息不重复存原文。
+- 路由(`routes/admin/logs.ts`):`POST /:requestId/summary`(注册在 `GET /:requestId` 之前,免字面段被捕获);`GET /:requestId` 末尾附 `getCachedSummary()`。
+
+### 报表分析(`/reports`)
+对所选日志过滤条件聚合 `request_logs` 绘制统计图表(KPI 卡片 + 时间趋势 + 模型/服务商/状态码分布)。前端 `/reports` 页 + 7 处跳转按钮:`users`→`userId`、`apps`→`appId`、`api-keys`→`apiKeyId`、`models`→`model`、`providers`→`provider`、`app-users-usage`→`appUserId`、`feature-usage`→`featureId`(**字段名与 `/logs` 完全一致 → 跳转通用**,改过滤字段约定时勿让两边漂移)。
+- **数据源=明细 `request_logs`(非 `usage_records`)**:日志列表暴露 14 维过滤(statusCode/requestPath/userAgent/appUserId/featureId/groupId/model/provider…),这些列**根本不在** `usage_records` 小时聚合表上。故报表像 `getUsageByAppUser`/`getUsageByFeature` 那样直接聚合明细行。
+- **过滤条件单一真相源**(`src/db/repositories/logs.ts`):`buildRequestLogConditions(filters)`(返 `SQL[]`)+ `logFilterNeedsDetails(filters)`(仅当含 requestPath/userAgent/hideArchived 时 true)从 `listRequestLogs` 内联中抽出并导出,报表仓储复用——**报表图表与日志列表永不对过滤口径漂移**,改过滤逻辑只改这一处。`reportWhere` 包一层 `and(...)`(空条件返 undefined)。注意改 `listRequestLogs` 的 WHERE 必同步影响报表(等价重构,跑 `request-log.test.ts` 防回归)。
+- **双分支 leftJoin**:`logFilterNeedsDetails` 为真才 `.leftJoin(requestDetails, eq(requestId))`(hideArchived 判 `requestDetails.archivedAt IS NULL`、requestPath/userAgent 在 details 表),否则单表,避免无谓 JOIN 重表。仓储 5 个函数各自手写两支(非泛型 helper),因 drizzle 泛型无法经自定义 wrapper 传递 `SelectedFields`/`groupBy` 重载(同 `getUsageByAppUser` 范式)。
+- **逐列 COALESCE(红线)**:共享片段 `SUM_PROMPT`/`SUM_COMPLETION`/`SUM_CACHE_READ`/`SUM_CACHE_CREATE`/`SUM_TOKENS` 每列各自 `COALESCE(SUM(...),0)` 再相加——`request_logs.cache_*` 列 nullable 无默认,纯 OpenAI 组全 NULL 时单层外层 COALESCE 让 total 塌为 0(与 `getUsageByAppUser`/`getUsageByFeature` 同坑,见「Token 统计」)。所有 `SUM()` 结果 `Number()` 包装(mysql2 返 DECIMAL 字符串)。
+- **时间分桶 = `DATE_FORMAT(CONVERT_TZ(created_at,'+00:00','+08:00'),fmt)`**:created_at 是 UTC session 下的字面量,`DATE_FORMAT` 无时区感知按字面读,须先 `CONVERT_TZ` 到北京否则分桶按 UTC 日界(08:00 CST)切——与总览/配额「今天」错位(同 `getUsageTrends`)。粒度 fmt:`hour`=`%Y-%m-%d %H:00:00`、`day`=`%Y-%m-%d`、`week`=`%Y-%u`、`month`=`%Y-%m`。
+- **错误率不除零**:仓储 `getReportOverview` 返 `errorRate=totalRequests>0?totalErrors/totalRequests:0`(前端 ×100 显示);`SUM_ERRORS=SUM(CASE WHEN statusCode>=400 THEN 1 ELSE 0 END)`,NULL status(dedicated 无响应日志)不计错。
+- **分布 NULL 归「未知」**:`getReportByModel`/`ByProvider` 的 `key`(NULL 模型/服务商)、`getReportByStatus` 的 `statusClass`(status NULL)前端显示「未知」;status 用 `CASE WHEN statusCode IS NULL THEN NULL ELSE FLOOR(statusCode/100)*100 END` 分百位类(200/400/500)。维度分布 `ORDER BY SUM_TOKENS DESC LIMIT 50`。
+- **drizzle 无法附 `MAX_EXECUTION_TIME` hint**(同 `runLogArchive` 须原生 SQL 附 `FORCE INDEX` 的原因):靠 `idx_request_logs_created_at`(后端强制要 `startDate`)+ 维度 `LIMIT 50` + 趋势 `LIMIT 100000` + 前端默认近 7 天 兜底。
+- **路由**(`src/routes/admin/reports.ts`):5 端点 `/overview`/`/trends`(?granularity)/`/by-model`/`/by-provider`/`/by-status`,全 `{data}` 信封;`parseReportFilters` 与 logs 同口径(数字 `Number()||undefined`、字符串 `||undefined`、日期 `new Date()`、hideArchived==='true')。**注册坑**:`app.route('/admin/reports', adminReports)` 在 `app.route('/admin', adminQuotas)` **之前**(否则 `/:type/:id` 吞 `/admin/reports`),与 analysis/settings 同约束。
+- **前端**(`web/src/app/reports/page.tsx` + `components/report-charts.tsx`):过滤区整段照搬 logs 页(`getLogFilterOptions`/`listUsers`/`listApiKeys`/`listApps`/`listUserGroups` + 三联动 effect)、默认近 7 天北京日(`defaultDates` 用 `beijingTodayStart`/`toBeijingDateTimeLocal`,**不去 `Z`**);4 张 KPI StatCard;Tabs(趋势 `LineChart` 双 Y 轴=请求/Token+cacheTokens / 模型分布 / 服务商分布 / 状态码分布 各 `<DistributionCharts>` 饼图占比+横向 `BarChart` 排名);粒度 Select(切换仅重请 trends 不重载分布);底部「在日志中查看明细」`router.push('/logs?<7字段>')` 下钻。**`useSearchParams` 读 URL 预设**(同 logs 字段)→ 默认导出必须 `<AppLayout><Suspense>...</Suspense></AppLayout>`(Next 16 静态导出硬约束)。recharts `REPORT_COLORS` 调色板与总览页同系。加载=点「筛选」`Promise.allSettled` 并行 5 端点(仿总览页)。
+
+### 智能分析 Agent(`/analysis`)
+对话式 Agent:管理员自然语言→调只读查询工具取数→中文+Markdown 流式回答。基于 `@openai/agents` SDK。MVP:6 工具(4 固定查询 + `query_table`/`list_queryable_tables`)+ 真流式逐 token。
+- **坑:`agent.model = Model 实例`**(非字符串、非 `run()` options——`SharedRunOptions` 不含 `modelProvider`)。钉在 `agent.model` 绕过模型名解析,否则 fallback 默认 OpenAI provider 要 `OPENAI_API_KEY`。
+- **桥接**(`src/agents/gateway-model.ts`):实现 SDK `Model` 接口,`ModelRequest`⇄`InternalRequest`、`InternalResponse`⇄`ModelResponse`,复用 `ProviderAdapter`(直连上游,不经限流/配额)。**纯单阶段流式**(`getStreamedResponse`):`provider.stream()` 逐 token `yield output_text_delta`,同时**从流式 chunk 累积权威 output**(text 进 `textBuf`、`function_call` 来自 `output_item.done`→`InternalStreamChunk{type:'tool_call'}`),循环结束组装 `response_done.output`,SDK Runner 据此驱动 tool 循环。**每轮仅 1 次上游请求、不双倍记账**(曾两阶段:流式+非流式 backfill 重发拿 function_call,采样/推理路径可能与流式不一致、放大推理模型多步倾向且双倍成本——gpt 推理模型 `MaxTurnsExceeded` 高发主因之一)。usage 取流式 `response.completed`。空流兜底 `sawAnything` 现已基本不触发——非 2xx 上游错误由 `BaseProvider.stream()` 的 `response.ok` 检查直接抛 `providerError`(见「Provider 适配器」);仅兜底"上游 200/SSE 但事件全未识别"的罕见情况。**仅 OpenAI 系**(gpt/qwen)走此路径(`OpenAIProvider.transformStreamChunk` 才解析 `output_item.done`);若将来配 Anthropic 需补流式 tool 解析,否则 tool 轮无 function_call。
+- **reasoning 流式**(o/gpt 推理系列):SDK 扩展点 `{type:'model',event}`(非旁路 callback)。`agent.modelSettings={reasoning:{summary:'auto'}}`(`analysisAgentReasoningEnabled` 默认 true)→`transformStreamChunk`→`InternalStreamChunk{type:'reasoning'}`→`yield reasoning_delta`。纯展示不进 textBuf/usage。**非推理模型开启会 400**;DashScope/Anthropic 不解析 reasoning。
+- **工具**(`src/agents/analysis-tools.ts`)全 read-only:execute 内 try/catch 转 `{error}`、绝不抛。日期传 ISO 8601 UTC(repo 内已 `CONVERT_TZ` 切北京时区)。
+- **坑:tool schema 必须 `strict:false` + JSON Schema**(`tool({parameters: z.toJSONSchema(z.object({...})), strict:false, execute})`)。带 zod 强制 `strict:true` 且 execute 前 zod parse,非 OpenAI 服务商 function-calling 类型松(`limit:"10"`、给 ID 填 `""`)→ strict zod 拒 `InvalidToolInputError`(execute try/catch 接不到)→死循环 `MaxTurnsExceeded`。`strict:false` 跳过验证,execute 收原样 args(`unknown`),入口 `cleanInt`/`parseDate` 自行清洗。**`strict:false` 不接受 zod(只接受 JSON Schema)**,故必须 `z.toJSONSchema()`。
+- **坑:SDK 工具调用约定**——`tool()` 暴露 `.invoke(runContext, input: string, details?)`(非 `.execute`),第二参数是 **JSON 字符串**。测试须 `t.invoke({}, JSON.stringify(args))`;传对象抛 `InvalidToolInputError`。
+- **`query_table` + `list_queryable_tables`**(受控参数化查询,非自由SQL):**安全模型**——进 SQL *结构*(表名/列名/聚合/alias/操作符)都来自**白名单**或枚举字面量,进 SQL *值*走 `sql\`${v}\``参数绑定,零模型输入拼进 SQL 文本。`sql.identifier()` MySQL 方言不转义反引号(白名单才是真边界)。`createPool` 未开 `multipleStatements`。**单一真相源** `src/agents/query-table-schema.ts`(13 张可查表,**`admin_users` 整表排除**)同时充当工具描述/白名单/结果转换/`*`展开(展开为 `!sensitive && !heavy` 显式列清单,绝不用 `SELECT *`)。列名逐字匹配 `src/db/schema.ts` snake_case;列 `desc` 也是 DB COMMENT 真相源(派生 `column-comments.ts`,由 `check-schema-sync.ts` 在 `pnpm db:gen` 校验)。
+  - **敏感列拒绝**(脱敏红线):`api_keys.key_secret`/`upstream_api_key_enc`、`providers.api_key_enc`、`request_details.request_headers`/`response_headers`/`client_ip` 标 `sensitive`——SELECT/WHERE/groupBy 任一触碰即拒整个查询。**大字段截断**:`request_body`/`response_body`/`stream_chunks` 标 `heavy`(单值 `slice(0,1000)+'…[已截断]'`;整体超 30KB 再砍)。**超时**:`db.transaction` 内 `SET SESSION MAX_EXECUTION_TIME=5000`;`LIMIT` 走参数绑定(`cleanInt` 夹 `[1,500]`,默认100)。**JOIN**:关联须在 `JOIN_RELATIONS` 白名单(含多态 `rate_limits` 的 `target_type` 判别);禁笛卡尔积、禁重复 JOIN 同表;ON 列也校验非 sensitive。单/多表双模式(`joins.length>0` 切换,多表模式列强制 `table` 前缀)。
+- **SSE 路由**(`routes/admin/analysis.ts`):`POST /chat`(streamSSE)`{message, history?}`,事件 `meta`/`tool_started`/`tool_result`(summary≤2000截断,模型仍收完整)/`reasoning_delta`/`text_delta`/`error`/`done`(附 usage)。`MAX_TURNS=12`、`MAX_HISTORY=20`。`run(agent,input,{stream:true})` 事件循环:`raw_model_stream_event.data`=`GatewayModel` yield 的 StreamEvent(`output_text_delta`→`text_delta`、`{type:'model'}`→`reasoning_delta`);`run_item_stream_event` 按 name 映射 `tool_called`→`tool_started`、`tool_output`→`tool_result`。**`message_output_created` 刻意不 emit `text_delta`**(文本=已逐 token emit,再发重复)。**坑:必须发 SSE 心跳**——run 的 tool 调用/流式轮次切换间有数十秒静默,云 ELB(七层 HTTPS→Hono)及任何七层代理在静默期切连(`X-Accel-Buffering` 是 nginx 专用、云 ELB 不识别),故 `setInterval` 每 15s 发 `: ping\n\n` 注释帧(`stream.write`,`stream.aborted` 守卫+`finally` `clearInterval`)保活——注释帧无 `event:`/`data:`,前端忽略不产生 UI 事件。前端 `streamAnalysisChat` try/catch/finally:中途断开转中文「连接已中断」(保留已流式内容)、主动 abort 原样放行交 `signal.aborted` 判定。
+- **记账**(`src/services/agent-billing.ts`,仿 log-summary):`featureId='gateway-analysis'`、复用 `ensureAdminKeyId()`、`request_headers:null`;`bill(isError)` 用 `billed` 标志防双计;`usageAcc` 在 try 外捕获。
+- **路由挂载坑**:`app.route('/admin/analysis', adminAnalysis)` 必须在 `app.route('/admin', adminQuotas)` **之前**。
+- **配置**(4 个 `SETTING_KEYS`,独立于日志分析):`analysisAgentProvider`/`analysisAgentModel`/`analysisAgentSystemPrompt`/`analysisAgentReasoningEnabled`。保存 provider/model 触发 `ensureAdminKeyId`;reasoningEnabled 不触发。**前端「智能分析 Agent」卡片服务商下拉只列 `apiType==='openai'`**(UI 强制仅 OpenAI 系,避免误配 Anthropic)。**坑:同页「日志分析」卡片用相同 `providers.filter((p)=>p.isActive)` 写法但故意不过滤类型**(日志小结不需 tool,Anthropic 也可用)——改智能分析下拉时勿误同步日志分析那处。
+- **前端**(`web/src/app/analysis/page.tsx` + `components/chat/`):reasoning/tool/text 按 SSE 到达顺序交错渲染(**不按类型分组**,否则多轮 tool 间推理被压扁丢失时间线);同类型 segment 尾部合并、跨 tool 切换新起一段。mermaid ~1MB **动态 `import()`**(静态导出 code-split)、模块级单例 `initialize`(securityLevel **loose**)、**debounce 250ms**(流式拼接语法不完整时 render 抛错,推迟到 chart 稳定≈流末)、失败静默回退显示源码、`useId()` 清洗生成 SSR-safe id(react-markdown v10 的 `code` 组件已无 `inline` prop,故在 `pre` 层取子 `<code>` className 判 mermaid)。默认系统提示引导 Agent 在占比/流程/结构场景用 pie/flowchart/sequenceDiagram(克制,能表格说清优先表格)。SSE 消费手写 `fetch`+`ReadableStream`+帧解析(`lib/api.ts` `streamAnalysisChat`,**不进 `fetchJSON`**——它 await 整个 body)。**多会话**(纯前端):左栏历史列表(新建/切换/行内重命名/删除 AlertDialog),state `sessions+activeSessionId`,`messages=active?.messages??[]`。localStorage key `analysis_sessions`(旧单会话 key 一次性迁移后删除);**防抖持久化**(400ms,流末 finally 强制 flush);**`send` 用闭包 `targetId` 锁定流式目标会话**——切换/新建/删除/清空中途 abort 不污染当前活动会话;标题自动取首条 user 消息前 20 字、仅在该会话无 user 消息时。error 轮不入 history。
+
+### Provider 适配器
+`ProviderAdapter` 接口,`BaseProvider`(抽象)+`OpenAIProvider`+`AnthropicProvider`(仅跨族 Internal;同族走 passthrough)。模型路由:先查 `virtual_models`,再按前缀兜底(`gpt-`/`o1-`/`o3-`/`text-embedding-`/`dall-e-`→openai,`claude-`→anthropic,`qwen-`→dashscope);`dashscope` 是 DB 里 `apiType='openai'` 的 provider 行(`qwen-` 指向它),实际跑 `OpenAIProvider`(无独立类)。
+- **坑(OpenAI Responses tool 序列化)**:`OpenAIProvider.transformRequest` 须把 assistant 的 `tool_use` content block 拆成**顶层 `function_call` item**(`{type:'function_call',call_id,name,arguments}`),不能塞 assistant message content(Responses 只允许 `input_text`/`output_text`,上游返400)。Anthropic 相反——`tool_use` 就在 assistant content 里。
+- **上游 API 选择**:`OpenAIProvider` 对上游用 Responses API(`${baseUrl}/responses`),非 Chat Completions;网关 `/openai/v1/chat/completions` 内部转 Responses 转发再转回。
+- **坑:流式 `InternalStreamChunk` 的 usage/stop 契约跨 provider 不对称**,消费方区分"终态 usage"靠 **`stopReason` 是否存在**(非 `type==='stop'`):
+  - `OpenAIProvider`(`transformStreamChunk`):上游 `response.completed` 终态且几乎总带 usage→`{type:'usage',stopReason,usage}`;仅当无 usage 回退 `{type:'stop',stopReason}`。
+  - `AnthropicProvider`:终态 `message_delta`→`{type:'stop',stopReason,usage}`(stop 携带 usage);`message_start` 的 usage 是输入侧、非终态、不带 stopReason。
+  - `chat-completions.ts` 流式据此发 `finish_reason`(协议要求结束前恰好一个带 `finish_reason` 的 chunk,`finishSent` 守卫,**缺它很多 SDK 丢弃累积内容返 null**)。**`responses.ts` 流式 stop 分支除 stopReason 外必须读 `usage.completionTokens`**(OpenAI 终态走 usage 分支、Anthropic 终态走 stop 分支;只读 completionTokens,**promptTokens 刻意不读**——保留 `message_start` 输入值不被 stop 的 promptTokens=0 覆盖)。`gateway-model` 不读 `stopReason`(权威 output 靠流式累积),故不受此契约影响。
+- **坑:两 openai 流式路由支持 function calling,但 arguments 无逐 token 增量**。`transformStreamChunk` 从 `output_item.done`(item.type=`function_call`,携带完整 name+call_id+arguments)解析成 `{type:'tool_call'}`(整个 call 一次到达)。客户端能拿到完整 function call(SDK 累积拼接 arguments,一次到全也合法);仅 arguments 逐 token 增量不支持。
+- **`BaseProvider.openStream()`/`stream()`**:`openStream`=fetch→设 `streamResponseHeaders`(供日志)→`!response.ok` 读 body 前500字抛 `GatewayError(PROVIDER_ERROR,msg,status>=500?502:status)`(**携真实 status**,与三路由非流式分支同口径)→2xx 返 `iterateSseBody()`(data 行解析+[DONE],与 `parseSSEDataLines` 同语义)。**旧版不检查 ok、按 SSE 解析不到 data 行静默空流**——曾表现为分析 Agent"流式为空"分不清原因;现非2xx直接抛错带 status+body。`stream()`=`await openStream()` 后 `for await yield`(保留供 `gateway-model` 及旧调用方)。`createProvider` 每请求 `new` 实例故实例属性无并发污染。**坑:`send()` 先 `text()` 再 `try JSON.parse`(catch 回退原文)**——上游错误体可能非合法 JSON(空/HTML/纯文本),原 `response.json()` 抛 SyntaxError 绕过路由 status 检查→500。
+- **坑:三路由 Internal 流式必须 `streamSSE` 前 `await provider.openStream()` 响应头阶段判定**(同族 passthrough/dedicated 不经此)。响应头一到(~100ms,正常请求零额外延迟)即 resolve/抛错;**非2xx走 catch**:`c.set('usage',{...,isError:true})`(让 requestLog 按"usage 存在=非流式"落日志)+`return c.json(formatXxxError(err),err.statusCode)`(**真实 status,不开 SSE 流**)。**修复"非一对一 key 上游 429 下游无响应"**:原先先 `return streamSSE`(发200头)再 fetch,429 时 200 头已发无法回退,catch 写畸形 error chunk 缺 finish_reason/终态→SDK 丢弃累积内容返 null→下游"无响应"。测试钉死 `openStream` 4xx 原样/5xx→502、三路由各一 mock reject 429→断言 HTTP429+JSON(非SSE)+body 不含 `[DONE]`。
+- **坑:`/openai/v1/responses` 流式必须合成完整 Responses 事件链**。`transformStreamChunk` 只透传 `output_text.delta`/`reasoning_summary_text.delta`/`response.completed`,**丢弃**上游 `output_item.added`/`content_part.added`/`content_part.done`/message 的 `output_item.done`(function_call 的另解析成 tool_call),故路由须自己合成 message 与 function_call 两类 item 事件链。`output_index` 路由**动态分配**(`nextOutputIndex` 按 item 到达递增,message 与 function_call 共享):首个 text delta 前惰性发 message 的 `output_item.added`+`content_part.added`,delta 带 `item_id`/`output_index`/`content_index`,结束发 `output_text.done`+`content_part.done`+`output_item.done`;`tool_call` chunk 发 function_call 的 `output_item.added`(in_progress,空 arguments)→`response.function_call_arguments.done`(携带完整 arguments)→`output_item.done`(completed)。**`function_call_arguments.done` 不可省**——Node/Agents SDK 从 `output_item.done`/`response.completed` 整体替换取 arguments 不依赖此事件,但 **Python SDK(openai-python #2723)及部分严格客户端靠它 finalize arguments**,缺则 arguments=None→tool 不执行→多轮链断。`response.completed` 的 `response.output` **必须按 `output_index` 排序收纳所有 item**(`outputItems.sort(by index)`)——空数组或漏 function_call 会让严格 SDK 丢弃流式累积内容。`textBuf` 累积文本兼供日志 `responseBody`。
+- **坑:`/anthropic/v1/messages` 流式也支持 tool_use,同样无 arguments 逐 token 增量**。`AnthropicProvider.transformStreamChunk` 用实例字段 `pendingToolUse`(id/name/jsonBuf)累积 `input_json_delta`,在 `content_block_stop` 时 `JSON.parse` 发 `{type:'tool_call',toolCall:{id,name,input}}`(`content_block_start`/`input_json_delta`/text 块/孤立 stop 仍 return null)。路由流式**动态多块管理**(`nextBlockIndex`):首个 text delta 惰性开 text 块、`tool_call` 到达先关打开的 text 块(`content_block_stop`)再开 tool_use 块(`content_block_start`→`content_block_delta` input_json_delta 带完整 JSON→`content_block_stop`)、stop 时关剩余打开 text 块。覆盖纯文本/纯 tool_use/text+tool_use 混合/空响应。`InternalStreamChunk.toolCall` 跨三 provider 统一(openai/dashscope 从 `output_item.done`、anthropic 累积 `input_json_delta`)。
+
+### 配额执行
+两阶段:请求前预估(取请求体 `max_tokens`)+响应后自动禁用(超限目标 `status=quota_exceeded`)。**惰性自动恢复**:`authMiddleware` 三检查点(key/user/app)遇 `quota_exceeded` 先调 `tryRestoreQuota`(DB 准确,不走5s缓存),当日/月配额均有剩余则改回 `active` 放行,否则429;月配额超限整月不自动恢复。手动 `POST /admin/:type/:id/restore`。配额缓存存 Redis、TTL5s、多实例共享、乐观递增走 Lua 原子;Redis 不可达读 miss 回退 DB。预检用缓存(乐观有界,authMiddleware 查 status 兜底),响应后禁用走 `sumTokensUsed` 查 DB(准确最终一致)。**坑:日/月配额按北京时间切边**(`src/services/quota.ts` `getDayStart`/`getMonthStart`,`QUOTA_TZ_OFFSET_MS`,非 UTC)。
+
+### Token 统计与配额口径(含 Anthropic prompt cache)
+`usage_records`(小时聚合)与 `request_logs`(明细)各有四列:`prompt_tokens`/`completion_tokens`/`cache_read_tokens`/`cache_creation_tokens`。**`total_tokens` 才是配额口径**(`sumTokensUsed` 的 `SUM(total_tokens)`)。
+- **跨 provider 统一拆 cache**:所有 provider 的 `prompt_tokens` 统一为**非缓存输入**,cache 命中进 `cache_read`。Anthropic 直取;OpenAI 系(`input_tokens`/`prompt_tokens` **已含 cache**,cached 是子集)做**减法拆解**:`prompt=input-cached`、`cacheRead=cached`(避免 `total` 下 cache 算两遍)。拆解点:`anthropic.ts`、`openai.ts`(`splitOpenAIUsage`)、`dedicated-proxy.ts`。**`total=prompt+completion+cacheRead+cacheCreation`**。拆解只影响记账,对客户端 usage 不可见。**新增 provider**:若 `input_tokens` 排除 cache 直取;若已含 cache 必须减法(不能 `cacheRead=cached` 且 `prompt=input` 会重复算 cache)。
+- **流式 `message_delta` 守卫**:放宽为 `data.delta?.stop_reason || data.usage`(避免漏只带 usage 的最终事件),该 chunk `promptTokens` 必须给0(否则覆盖 `message_start` 正确输入值)。
+- **dedicated 透传**:流式从 `json.usage ?? json.response?.usage`(**Responses 的 usage 在 `response.usage` 而非顶层**,不取则全记0)、非流式从 `bodyJson.usage`,按上游协议分流。
+- **fallback 估算=provider 级 opt-in,默认关闭**:上游不返 usage 默认记0;仅 provider 勾选「启用 Token 估算回退」(`providers.config.estimateFallback`,复用 config JSON 零迁移)才逐字段兜底。**三条链路统一 opt-in**(dedicated 经 `AuthContext.providerEstimateFallback`、`/openai/*`+`/anthropic/*` 经 `providerCfg.estimateFallback`)。**dedicated 额外路径白名单**:`allowFallback=isTokenGeneratingPath(path)`(含 chat/completions、/messages、/responses,排除 count_tokens/images/embeddings/models)。**动机**:`CHARS_PER_TOKEN=2` 对英文/代码偏高约2×、且把结构字符串一并计入,故默认只按真实 usage 计费。
+- **坑**:`getUsageByFeature`/`getUsageByAppUser` 的 `totalTokens` 是现算 `SUM(prompt)+SUM(completion)+SUM(cache_read)+SUM(cache_creation)`,**不含 cache 就少算**;务必 **per-column `COALESCE`**(每个 SUM 各自包 `COALESCE(...,0)` 再相加,不能只外层套一个)——`request_logs` 的 `cache_*` 列可空无默认,纯 OpenAI 分组全 NULL 时单层 COALESCE 让整体兜底0(表现:功能/用户用量页总 token 恒为0,而总览页读 `usage_records.total_tokens` 正常)。summary/per-group select/orderBy 三处共享表达式(两函数共6处)。
+
+### 限流(Redis 令牌桶)
+令牌桶存 Redis(`RATE_LIMIT_LUA` 一次 eval 原子处理 qps+rpm 两桶),**多实例共享**(进程内 Map 在 N 副本放大 N 倍,Redis 化主因)。桶空闲2h自动 `PEXPIRE`,无进程内定时器。**fail-open**:Redis 不可达 `checkRateLimit` 放行。限流对象(global/app/user/api_key)按 `rate_limits` 表查询,无记录 fallback 到 `DEFAULT_QPS=10`/`DEFAULT_RPM=60`(`src/services/rate-limiter.ts`,已移除 env 可配);未配置任何记录仍有全局兜底。
+
+### Redis(多实例共享)
+限流桶/配额缓存/归档锁+done标记/迁移锁 共用(`src/redis/`:单例+3个Lua+`lock.ts` 分布式锁)。**强依赖**:`initRedis()` ping,连不上 `exit(1)`;运行时抖动 fail-open。必配 `REDIS_URL`(+`REDIS_PASSWORD`,ACL 加 `REDIS_USERNAME`),TLS 用 `rediss://`。**坑**:不用 ioredis `keyPrefix`(不作用于 Lua 内 `redis.call`),前缀各 service 用 `cfg.keyPrefix` 手拼;必配 `commandTimeout`(env `REDIS_COMMAND_TIMEOUT_MS` 默认1000——`maxRetriesPerRequest` 不管慢响应,不配则 Redis 卡顿拖垮限流、fail-open 失效);锁 value 用 `podId`、release 走 Lua 校验防误删。
+
+### 管理后台(前端 `web/`)
+Next.js 16(App Router)+React 19,静态导出由 Hono 在 `/dashboard/*` 托管。shadcn/ui + Tailwind,全中文(zh-CN)。
+- **静态导出仅生产生效**(`web/next.config.ts`):`output:'export'`+`distDir:'out'` 包在 `NODE_ENV==='production'` 条件里;dev 不设(否则跳过 `rewrites()`,`/admin/*`、`/health` 无法代理)。`basePath:'/dashboard'`(401 整页跳转用绝对路径 `/dashboard/login`)。
+- **dev/prod baseURL 切换**:`window.location.port==='3001'` 判定。`api.ts`/`auth.tsx`/`getSystemInfo` 各有一份。
+- **`fetchJSON` 三层封装+两信封**(`web/src/lib/api.ts`):子路由 `{data:T}`/`{data:T[],pagination,summary?}`→`fetchUnwrap`/`fetchPaginated`;配额路由(挂 `/admin` 根)返**无信封** `{success,...}`→`fetchJSON`。统一塞 JWT、拾 `X-Renewed-Token`、401 清 localStorage 跳登录。
+- **坑:前端时区镜像后端**(`web/src/lib/utils.ts`):`beijingTodayStart()` 纯 UTC 位移算北京00:00,**镜像后端 `getDayStart`**——dashboard「今天/30天」必须用,否则00:00–08:00 CST 的请求算昨天。日期范围用 `toBeijingDateTimeLocal`(naive,后端按 CST 解析),显示用 `formatDateTime`(`timeZone:'Asia/Shanghai'`)。**不要去 `Z`**。
+- **坑:静态导出 + `useSearchParams` 必须包 `<Suspense>`**(Next 16 硬约束):读 URL 预设筛选的页面(如 `/logs?userId=`)默认导出需 `<Suspense>` 包裹内容组件。
+- **跨页「日志」跳转 = URL 预设筛选约定**:`router.push('/logs?<field>=<value>')`——`/users`→`userId`、`/apps`→`appId`、`/models`→`model`(虚拟模型 ID)、`/providers`→`provider`(服务商 name)、`/app-users-usage`→`appUserId`、`/feature-usage`→`featureId`。后端 `listRequestLogs` 支持上述+`statusCode`/`requestPath`/`userAgent`/`groupId`/`date` 过滤;`requestPath`/`userAgent` 走 `LIKE '%...%'`(**值须 `likePattern()` 转义 `%`/`_`/`\`**)。Select 过滤框 URL 预设值可能不在选项里——渲染时并入。
+- **`DataTable`**(`web/src/components/data-table.tsx`)9 个列表页复用:`compact`/`keyExtractor` 非破坏扩展(不传时 undefined),改它务必向后兼容。**合并箭头**(`logs-merge-arrows.tsx`):`/logs` 对已归并行,`mergedInto` 目标同页画弧线(同链同色、并查集);详情「查看完整记录」顺 `mergedInto` 链跳尾部。
+
+## 关键约定
+- **ESM 模块**:`"type":"module"`,所有 import 路径带 `.js`(即使源是 `.ts`)。tsup 单文件 ESM。
+- **Drizzle ORM**:原生模式——不定义 `relations()`,所有 JOIN 手写 SELECT。**drizzle 不支持声明式 column/table comment**(issue [#5203](https://github.com/drizzle-team/drizzle-orm/issues/5203));字段中文注释走自动注入。列中文 desc **真相源是 `src/agents/query-table-schema.ts`**(`query_table` 工具描述与 DB COMMENT 同源);`src/db/column-comments.ts` 从它派生(13 可查表)+ 本地手补 `admin_users`,供 `apply-comments.ts` 注入 COMMENT。改字段工作流:①改 `schema.ts`;②若该列应可查,在 `query-table-schema.ts` 补 `ColumnMeta`(desc/kind/sensitive/heavy);③`pnpm db:gen`(drizzle-kit generate + apply-comments + check-schema-sync:校验白名单列名与 schema.ts 一致,硬错退出/漏登记软警告);④`pnpm db:migrate`。migrator 只认 journal、不读 snapshot,故纯注释迁移无需 snapshot。
+- **数据库时区**(连接 session 固定 UTC,与容器/进程时区无关):drizzle mysql2 session 对所有 TIMESTAMP/DATETIME/DATE 强制 `typeCast: field.string()`,timestamp/datetime 当 UTC 解析(`new Date(value+"+0000")`)——**只有 server 吐 UTC 字面量(session=UTC)读才对**。`src/db/index.ts` `pool.on('connection') SET SESSION time_zone='+00:00'` 钉死 UTC;配 `mysql2 timezone:'+00:00'`。核对真值用 `UNIX_TIMESTAMP(col)`。**读**:经 drizzle 读出即真实 UTC `Date`(`.toISOString()` 带 `Z`)。**写**(Date→DATETIME):`expires_at`/`last_login_at`/`archived_at` 用 `formatUtcDateTime()`(`src/db/repositories/logs.ts`);`updated_at` 有 `ON UPDATE CURRENT_TIMESTAMP` 不要显式写。**前端显示**:后端返 UTC ISO(带 `Z`),前端 `new Date()` 按 UTC 解析,`formatDateTime`/`formatDate` 用 `timeZone:'Asia/Shanghai'`。**不要去 `Z`**。**列类型全 DATETIME**(Y2038;drizzle 对 TIMESTAMP/DATETIME 映射等价;TIMESTAMP→DATETIME 迁移须 session=UTC 执行,迁移 0005 顶部 `SET time_zone='+00:00'` 兜底)。
+- **错误处理**:`GatewayError` 类 + 错误码;`formatErrorForPath()` 按协议(OpenAI/Anthropic)适配。
+- **UI**:全中文(zh-CN),shadcn/ui + Tailwind。
+- **配置**:`src/config/schema.ts` Zod 校验,`loadConfig()` 加载。
+- **日志**:`createLogger(name)`(`src/utils/logger.ts`)工厂返 pino——时间戳渲染**北京时间**(`YYYY-MM-DD HH:mm:ss`)、level 字符串化(info/warn/error)、dev 走 `pino-pretty`。`LOG_LEVEL`(默认 info)。
+- **坑:MySQL `SUM()` 经 mysql2 返 DECIMAL(字符串)**——`sql` 模板聚合务必 `Number()` 包装。
+
+## 测试
+Vitest,mock Hono 上下文,在 `tests/`。无 DB 集成测试——Provider/配额测试均 mock DB。`pnpm test` 默认 watch;CI 用 `pnpm exec vitest run`。
+
+**改对应子系统前先跑相关测试**(许多测试钉死上文「坑」不变量):
+- **配额**:`quota.test.ts`、`quota-check.test.ts`、`quota-cache.test.ts`、`usage-track-quota.test.ts`、`auth-quota-check.test.ts`、`usage-repository.test.ts`(钉死 per-column COALESCE)。
+- **请求日志**:`request-id.test.ts`、`request-log.test.ts`(钉死两表 upsert)、`request-log-middleware.test.ts`(钉死流式跳过判据=`c.get('usage')` 存在性、dedicated 429 回归)、`log-dedup.test.ts`、`log-archive.test.ts`、`log-archive-scheduler.test.ts`(钉死同日最多一次+崩溃可恢复)。
+- **Provider/路由**:`openai-provider.test.ts`、`anthropic-provider.test.ts`(cache 拆解+`message_delta` 守卫+tool_use `input_json_delta` 累积成 `tool_call`)、`openai-responses-route.test.ts`(协议转换+estimateFallback opt-in)、`openai-chat-completions-route.test.ts`(流式 `finish_reason` 三路径)、`anthropic-messages-route.test.ts`(流式 tool_use content_block 合成)、`provider-stream.test.ts`(钉死 `openStream` 4xx 原样/5xx→502)。
+- **认证/管理路由**:`api-key.test.ts`、`admin-quotas.test.ts`、`admin-usage-route.test.ts`、`admin-apps-route.test.ts`(PATCH 用户/功能备注)。
+- **报表**:`reports.test.ts`(钉死共享过滤 `buildRequestLogConditions`/`logFilterNeedsDetails` 代理 + 逐列 COALESCE + CONVERT_TZ 北京分桶 + by-status NULL 归组 + 错误率不除零 + 双分支 leftJoin + `{data}` 信封 + query 解析;用 thenable chain mock 模拟 drizzle 构建器)。
+- **智能分析 Agent**:`gateway-model.test.ts`(桥接双向转换+真流式+reasoning+SDK Runner tool 循环)、`analysis-tools.test.ts`(.invoke JSON 字符串约定+strict:false 清洗+query_table 注入面+JOIN 测试组)。
+- **基础设施**:`redis-lock.test.ts`、`token-estimate.test.ts`(钉死 isTokenGeneratingPath 白名单)、`headers.test.ts`(钉死 rawHeaderPairs 保留大小写)、`config.test.ts`、`errors.test.ts`、`setup.test.ts`。

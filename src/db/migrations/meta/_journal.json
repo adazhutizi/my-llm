@@ -1,0 +1,83 @@
+{
+  "version": "7",
+  "dialect": "mysql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1781513294136,
+      "tag": "0000_tidy_beast",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1781595946353,
+      "tag": "0001_fix_timestamp_nullable_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1781658460944,
+      "tag": "0002_eminent_thunderbolt",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1782094812222,
+      "tag": "0003_charming_talon",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1782117417832,
+      "tag": "0004_nosy_maria_hill",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1782139619063,
+      "tag": "0005_ancient_whiplash",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1782573587132,
+      "tag": "0006_add_system_settings",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1782576383428,
+      "tag": "0007_drop_rate_limits_monthly_cost_usd",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1782877158641,
+      "tag": "0008_request_logs_unique_request_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "5",
+      "when": 1782912149410,
+      "tag": "0009_add_user_groups",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1783000000000,
+      "tag": "0010_add_column_comments",
+      "breakpoints": true
+    }
+  ]
+}

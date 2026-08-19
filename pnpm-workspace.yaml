@@ -1,0 +1,12 @@
+packages:
+  - '.'
+  - 'web'
+allowBuilds:
+  bcrypt: true
+  esbuild: true
+  sharp: true
+minimumReleaseAgeExclude:
+  - '@openai/agents-core@0.13.0'
+  - '@openai/agents-openai@0.13.0'
+  - '@openai/agents-realtime@0.13.0'
+  - '@openai/agents@0.13.0'

@@ -1,0 +1,42 @@
+{
+  "name": "llm-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.12.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage",
+    "db:gen": "drizzle-kit generate && tsx scripts/apply-comments.ts && tsx scripts/check-schema-sync.ts",
+    "db:migrate": "tsx src/db/migrate.ts",
+    "db:seed": "tsx src/db/seed.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.19.14",
+    "@openai/agents": "^0.13.5",
+    "bcrypt": "^6.0.0",
+    "drizzle-orm": "^0.36.0",
+    "hono": "^4.12.25",
+    "ioredis": "^5.11.1",
+    "mysql2": "^3.22.5",
+    "pino": "^9.7.0",
+    "pino-pretty": "^13.1.0",
+    "undici": "^7.26.0",
+    "uuid": "^10.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/node": "^22.15.0",
+    "@types/uuid": "^10.0.0",
+    "drizzle-kit": "^0.28.0",
+    "tsup": "^8.5.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.8.0",
+    "vitest": "^2.1.0"
+  }
+}

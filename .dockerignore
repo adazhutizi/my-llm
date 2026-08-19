@@ -1,0 +1,38 @@
+# Dependencies — installed fresh inside the image (don't copy host node_modules,
+# whose platform-specific .pnpm symlinks/junctions break on a different OS)
+**/node_modules
+
+# Build outputs — regenerated inside the image
+dist
+web/out
+web/.next
+**/*.tsbuildinfo
+
+# Local env — inject at runtime, never bake into the image
+.env
+.env.*
+!.env.example
+
+# VCS
+.git
+.gitignore
+
+# Tests & coverage — not needed at runtime
+tests
+web/tests
+coverage
+*.lcov
+
+# Logs & caches
+*.log
+npm-debug.log*
+.DS_Store
+
+# Editor config
+.vscode
+.idea
+
+# Docker & docs — not needed inside the image
+Dockerfile
+.dockerignore
+*.md
