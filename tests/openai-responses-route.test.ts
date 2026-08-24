@@ -366,6 +366,45 @@ describe('POST /openai/v1/responses', () => {
     expect(body.error).toBeDefined();
   });
 
+  it('marks usage isError=true on non-streaming upstream errors so the log row is persisted', async () => {
+    // Regression (上游 401 时日志表无记录): 非流式分支上游 ≥400 直接 return,
+    // 若不 c.set('usage'),requestLogMiddleware 按 usage===undefined 判为
+    // 「流式/未到达 handler」跳过落库 → /logs 看不到这条 401。此处以 post 阶段
+    // 读 c.get('usage') 的中间件模拟 requestLogMiddleware 的读取口径。
+    const mockProvider = {
+      transformRequest: vi.fn().mockReturnValue({ url: 'http://test', method: 'POST', headers: {}, body: {} }),
+      send: vi.fn().mockResolvedValue({
+        status: 401,
+        headers: {},
+        body: { error: { message: 'Invalid API key' } },
+      }),
+    };
+    mockedCreateProvider.mockReturnValue(mockProvider as any);
+
+    const appWithUsageCapture = new Hono();
+    let capturedUsage: any = 'unset';
+    appWithUsageCapture.use(async (c, next) => {
+      await next();
+      capturedUsage = c.get('usage');
+    });
+    appWithUsageCapture.route('/', responses);
+
+    const res = await appWithUsageCapture.request('/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4', input: 'Hello' }),
+    });
+
+    expect(res.status).toBe(401);
+    // usage 被设置(非 undefined)且标记 isError → requestLog 中间件会落库。
+    expect(capturedUsage).toBeDefined();
+    expect(capturedUsage.isError).toBe(true);
+    expect(capturedUsage.model).toBe('gpt-4');
+    expect(capturedUsage.provider).toBe('openai');
+    expect(capturedUsage.promptTokens).toBe(0);
+    expect(capturedUsage.completionTokens).toBe(0);
+  });
+
   it('normalizes Responses input_image parts to internal image blocks (cross-family → Anthropic)', async () => {
     // Responses input_image part(http URL 或 data:base64)须归一化为 Internal
     // image block,否则跨族 Anthropic 上游不认 input_image → 图片被忽略。

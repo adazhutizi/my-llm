@@ -86,6 +86,17 @@ responses.post('/', async (c) => {
       const upstreamRes = await provider.send(upstreamReq);
 
       if (upstreamRes.status >= 400) {
+        // 上游 4xx/5xx 也要落请求日志:此分支直接 return,若不设 usage,
+        // requestLogMiddleware 会按 usage===undefined 判为「流式/未到达 handler」
+        // 跳过落库 → /logs 看不到这条上游 401/429(对齐流式 openStream catch
+        // 分支与 dedicated/passthrough 的 isError 落库口径)。
+        c.set('usage', {
+          model: modelId,
+          provider: resolved.provider,
+          promptTokens: 0,
+          completionTokens: 0,
+          isError: true,
+        } satisfies UsageData);
         const err = Errors.providerError(
           `Upstream error (${upstreamRes.status}): ${JSON.stringify(upstreamRes.body)}`,
         );
