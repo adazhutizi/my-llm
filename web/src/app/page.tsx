@@ -475,18 +475,23 @@ export default function OverviewPage() {
           />
           <StatCard
             title="缓存命中 Token"
-            value={stats ? formatTokens(stats.cacheTokensToday ?? 0) : '0'}
+            value={stats ? formatTokens(stats.cacheTokens30d ?? 0) : '0'}
             subtitle={
-              stats && stats.tokensToday > 0
-                ? `今日 · 占比 ${(((stats.cacheTokensToday ?? 0) / stats.tokensToday) * 100).toFixed(1)}%`
-                : '今日'
+              stats
+                ? `近 30 天 · 今日：${formatTokens(stats.cacheTokensToday ?? 0)}` +
+                  (stats.totalTokens > 0
+                    ? ` · 占比 ${(((stats.cacheTokens30d ?? 0) / stats.totalTokens) * 100).toFixed(1)}%`
+                    : '')
+                : undefined
             }
             icon={<Database className="h-6 w-6" />}
           />
           <StatCard
             title="错误率"
             value={stats ? formatPercent(stats.errorRate) : '0%'}
-            subtitle="近 30 天"
+            subtitle={
+              stats ? `近 30 天 · 今日：${formatPercent(stats.errorRateToday ?? 0)}` : undefined
+            }
             icon={<AlertTriangle className="h-6 w-6" />}
           />
         </div>

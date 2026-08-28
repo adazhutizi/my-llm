@@ -4,7 +4,7 @@ FROM node:24-alpine AS builder
 # CI=true prevents pnpm from aborting on no-TTY prompts (e.g. modules-dir purge)
 ENV CI=true
 
-RUN corepack enable && corepack prepare pnpm@11.12.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.24.0 --activate
 
 WORKDIR /app
 
@@ -32,7 +32,7 @@ FROM node:24-alpine AS production
 RUN apk add --no-cache tzdata
 ENV TZ=Asia/Shanghai
 
-RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
+RUN corepack enable && corepack prepare pnpm@11.24.0 --activate
 
 WORKDIR /app
 

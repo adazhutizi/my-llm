@@ -25,12 +25,15 @@ export interface PaginatedResponse<T> {
 // ── Dashboard / Stats ─────────────────────────────────────────────────────
 
 export interface DashboardStats {
+  // 主值统一近 30 天口径（与「总请求数」「总 Token 数」卡片一致），副标题带今日
   totalRequests: number;
   totalTokens: number;
   errorRate: number;
   requestsToday: number;
   tokensToday: number;
+  cacheTokens30d?: number;
   cacheTokensToday?: number;
+  errorRateToday?: number;
 }
 
 export interface UsagePoint {

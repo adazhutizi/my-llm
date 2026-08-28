@@ -156,16 +156,23 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     totalCacheReadTokens?: number | string;
     totalCacheCreationTokens?: number | string;
     totalRequests: number | string;
+    totalErrors?: number | string;
   }>(`/usage/overview?${todayQs}`);
+
+  const requestsTodayCount = Number(today.totalRequests);
+  const errorsToday = Number(today.totalErrors ?? 0);
 
   return {
     totalRequests,
     totalTokens: Number(overview.totalTokens),
     errorRate: totalRequests > 0 ? totalErrors / totalRequests : 0,
-    requestsToday: Number(today.totalRequests),
+    requestsToday: requestsTodayCount,
     tokensToday: Number(today.totalTokens),
+    cacheTokens30d:
+      Number(overview.totalCacheReadTokens ?? 0) + Number(overview.totalCacheCreationTokens ?? 0),
     cacheTokensToday:
       Number(today.totalCacheReadTokens ?? 0) + Number(today.totalCacheCreationTokens ?? 0),
+    errorRateToday: requestsTodayCount > 0 ? errorsToday / requestsTodayCount : 0,
   };
 }
 
