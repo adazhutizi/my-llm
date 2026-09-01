@@ -16,6 +16,7 @@ import {
 } from './usage-extract.js';
 import { parseSSEDataLines } from '../utils/sse-parse.js';
 import { rawHeaderPairs, buildUpstreamHeaders, detectCredentialName } from '../utils/headers.js';
+import { logUpstreamError } from '../utils/upstream-error.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 同族透传旁路。
@@ -317,6 +318,18 @@ export async function passthroughUpstream(
 
   // ── 非流式:原样返回上游 body + 提 usage ────────────────────────────────
   const bodyBuffer = await upstreamRes.arrayBuffer();
+
+  // 上游非 2xx(429/401/5xx)打控制台日志(与 dedicated-proxy 共用 logUpstreamError,
+  // 级别策略统一:此前只落 DB 日志、控制台静默)。
+  if (!upstreamRes.ok) {
+    logUpstreamError('Passthrough', upstreamRes.status, {
+      requestId: c.get('requestId'),
+      provider: providerName,
+      model: virtualModel,
+      upstreamUrl,
+      body: new TextDecoder().decode(bodyBuffer.slice(0, 500)),
+    });
+  }
 
   if (contentType.includes('application/json') && upstreamRes.ok) {
     try {

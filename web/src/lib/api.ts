@@ -608,7 +608,10 @@ export function getReportByStatus(params: ReportFilterParams): Promise<ReportSta
 export async function getGlobalRateLimit(): Promise<RateLimitConfig> {
   const items = await fetchUnwrap<RateLimitConfig[]>('/rate-limits?targetType=global');
   if (items.length > 0) return items[0];
-  // Return sensible defaults if no global config exists yet
+  // No global row exists yet → backend does NOT apply a global rate limit
+  // (opt-in since the 10 QPS/60 RPM hardcoded default spuriously 429'd whole
+  // gateways). These numbers are only the form's suggested initial values;
+  // they take effect exclusively after the admin hits save (PUT creates the row).
   return { id: 0, targetType: 'global', rpm: 60, qps: 10, dailyTokens: null, monthlyTokens: null };
 }
 

@@ -275,7 +275,7 @@ export default function SettingsPage() {
         <Card>
           <CardHeader>
             <CardTitle>全局限流配置</CardTitle>
-            <CardDescription>设置所有路由的默认限流参数</CardDescription>
+            <CardDescription>全网关共享的令牌桶限流;未保存前不生效(无配置时全局限流关闭,仅应用/用户/密钥级限流兜底)</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4">

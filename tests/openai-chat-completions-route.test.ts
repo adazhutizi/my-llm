@@ -10,6 +10,18 @@ vi.mock('../src/services/model-router.js', () => ({
   createProvider: vi.fn(),
 }));
 
+// 路由 ≥400 分支与流式 openStream catch 现会经 getLogger/logUpstreamError 打
+// 控制台日志;getLogger 未初始化会抛错,mock 成 no-op(惯例见 passthrough.test.ts)。
+vi.mock('../src/utils/logger.js', () => ({
+  getLogger: () => ({
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+    child: () => ({ info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }),
+  }),
+}));
+
 import { chatCompletions } from '../src/routes/openai/chat-completions.js';
 import { resolveModel, getProviderConfig, createProvider } from '../src/services/model-router.js';
 

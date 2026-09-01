@@ -12,6 +12,7 @@ import {
 } from '../../utils/errors.js';
 import type { UsageData } from '../../middleware/usage-track.js';
 import type { UpstreamRequest } from '../../providers/base.js';
+import { logUpstreamError } from '../../utils/upstream-error.js';
 
 export const imageGenerations = new Hono();
 
@@ -72,6 +73,22 @@ imageGenerations.post('/', async (c) => {
     const upstreamRes = await provider.send(upstreamReq);
 
     if (upstreamRes.status >= 400) {
+      // 上游 4xx/5xx 也要落请求日志(对齐三路由 2026-08 修复口径):不设 usage 则
+      // requestLogMiddleware 按 usage===undefined 判为「未到达 handler」跳过落库,
+      // /logs 看不到这条上游 429/401。catch 分支刻意不设(未到上游,同 embeddings)。
+      c.set('usage', {
+        model: modelId,
+        provider: resolved.provider,
+        promptTokens: 0,
+        completionTokens: 0,
+        isError: true,
+      } satisfies UsageData);
+      logUpstreamError('Images', upstreamRes.status, {
+        requestId: c.get('requestId'),
+        provider: resolved.provider,
+        model: modelId,
+        body: JSON.stringify(upstreamRes.body) ?? '',
+      });
       const err = Errors.providerError(
         `Upstream error (${upstreamRes.status}): ${JSON.stringify(upstreamRes.body)}`,
       );

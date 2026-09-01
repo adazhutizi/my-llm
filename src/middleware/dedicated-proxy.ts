@@ -9,6 +9,7 @@ import { estimateTokens, estimateTokensFromUnknownBody, isTokenGeneratingPath } 
 import { extractUsage, mergeStreamUsage, type ExtractedUsage } from '../services/usage-extract.js';
 import { parseSSEDataLines } from '../utils/sse-parse.js';
 import { rawHeaderPairs, buildUpstreamHeaders, detectCredentialName } from '../utils/headers.js';
+import { logUpstreamError } from '../utils/upstream-error.js';
 
 /**
  * Dedicated (one-to-one) transparent proxy middleware.
@@ -339,6 +340,18 @@ export async function dedicatedProxyMiddleware(c: Context, next: Next) {
 
   // Non-streaming: try to extract token usage from response body
   const bodyBuffer = await upstreamRes.arrayBuffer();
+
+  // 上游非 2xx(429/401/5xx)打控制台日志:此前上游限流/鉴权失败只落 DB 日志,
+  // 控制台静默,排障时不易察觉。级别策略与 body 截断口径见 logUpstreamError。
+  if (!upstreamRes.ok) {
+    logUpstreamError('Dedicated', upstreamRes.status, {
+      requestId: c.get('requestId'),
+      provider: providerName,
+      model: requestModel,
+      upstreamUrl,
+      body: new TextDecoder().decode(bodyBuffer.slice(0, 500)),
+    });
+  }
 
   if (contentType.includes('application/json') && upstreamRes.ok) {
     try {

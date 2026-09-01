@@ -15,6 +15,8 @@ import { trackUsage } from '../../middleware/usage-track.js';
 import { persistRequestLog } from '../../middleware/request-log.js';
 import type { UsageData } from '../../middleware/usage-track.js';
 import { estimateTokens, extractTextLength, estimateTokensFromMessages } from '../../utils/token-estimate.js';
+import { getLogger } from '../../utils/logger.js';
+import { logUpstreamError } from '../../utils/upstream-error.js';
 import { imageUrlToSource } from '../../utils/image-block.js';
 
 export const responses = new Hono();
@@ -97,6 +99,12 @@ responses.post('/', async (c) => {
           completionTokens: 0,
           isError: true,
         } satisfies UsageData);
+        logUpstreamError('Responses', upstreamRes.status, {
+          requestId: c.get('requestId'),
+          provider: resolved.provider,
+          model: modelId,
+          body: JSON.stringify(upstreamRes.body) ?? '',
+        });
         const err = Errors.providerError(
           `Upstream error (${upstreamRes.status}): ${JSON.stringify(upstreamRes.body)}`,
         );
@@ -175,6 +183,18 @@ responses.post('/', async (c) => {
     try {
       streamIter = await provider.openStream(upstreamReq);
     } catch (openErr) {
+      // 上游响应头阶段失败:GatewayError(openStream 抛)已含真实 status(5xx→502
+      // 映射后)与 body 前500字;网络/超时类错误无 status。一律 error 级。
+      getLogger().error(
+        {
+          err: openErr,
+          status: openErr instanceof GatewayError ? openErr.statusCode : undefined,
+          requestId: c.get('requestId'),
+          provider: resolved.provider,
+          model: modelId,
+        },
+        'Responses upstream stream open failed',
+      );
       c.set('usage', {
         model: modelId,
         provider: resolved.provider,

@@ -49,8 +49,15 @@ export function getPrevMonthStart(): Date {
 }
 
 /**
- * Extract max_tokens from an OpenAI or Anthropic request body.
- * Returns DEFAULT_MAX_TOKENS if absent or invalid.
+ * Extract the client-declared output cap for quota precheck estimation.
+ * Reads the field each protocol actually uses — CC legacy `max_tokens`,
+ * Responses API `max_output_tokens`, CC o-series `max_completion_tokens`,
+ * Anthropic `max_tokens` — falling back through them in that order.
+ * (Previously only `max_tokens` was read, so every /responses request and
+ * every o-series CC request fell through to the DEFAULT_MAX_TOKENS=4096
+ * estimate even when the client declared 64k — under-blocking — and clients
+ * that send no cap were still charged the flat 4096.)
+ * Returns DEFAULT_MAX_TOKENS if all are absent or invalid.
  */
 export function extractMaxTokens(body: unknown, path: string): number {
   // Image generation does not consume tokens
@@ -58,10 +65,12 @@ export function extractMaxTokens(body: unknown, path: string): number {
 
   if (!body || typeof body !== 'object') return DEFAULT_MAX_TOKENS;
 
-  const raw = (body as Record<string, unknown>).max_tokens;
-  if (typeof raw !== 'number' || raw <= 0) return DEFAULT_MAX_TOKENS;
-
-  return raw;
+  const b = body as Record<string, unknown>;
+  for (const key of ['max_tokens', 'max_output_tokens', 'max_completion_tokens']) {
+    const raw = b[key];
+    if (typeof raw === 'number' && raw > 0) return raw;
+  }
+  return DEFAULT_MAX_TOKENS;
 }
 
 /**

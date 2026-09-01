@@ -86,6 +86,29 @@ describe('extractMaxTokens', () => {
   it('returns default when max_tokens is negative', () => {
     expect(extractMaxTokens({ max_tokens: -1 }, '/openai/v1/chat/completions')).toBe(DEFAULT_MAX_TOKENS);
   });
+
+  // Responses API declares the output cap as max_output_tokens; CC o-series
+  // uses max_completion_tokens. Both previously fell through to the flat
+  // DEFAULT_MAX_TOKENS estimate even when the client declared a real cap.
+  it('extracts max_output_tokens from Responses body', () => {
+    expect(extractMaxTokens({ max_output_tokens: 8000 }, '/openai/v1/responses')).toBe(8000);
+  });
+
+  it('extracts max_completion_tokens from CC o-series body', () => {
+    expect(extractMaxTokens({ max_completion_tokens: 65536 }, '/openai/v1/chat/completions')).toBe(65536);
+  });
+
+  it('prefers max_tokens over the newer field names', () => {
+    expect(
+      extractMaxTokens({ max_tokens: 1000, max_output_tokens: 8000 }, '/openai/v1/responses')
+    ).toBe(1000);
+  });
+
+  it('falls through to max_output_tokens when max_tokens is invalid', () => {
+    expect(
+      extractMaxTokens({ max_tokens: 0, max_output_tokens: 3000 }, '/openai/v1/responses')
+    ).toBe(3000);
+  });
 });
 
 describe('buildQuotaChecks', () => {

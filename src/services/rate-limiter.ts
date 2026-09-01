@@ -4,7 +4,7 @@ import { rateLimits } from '../db/schema.js';
 import { getRedis } from '../redis/index.js';
 import { getConfig } from '../config/index.js';
 
-/** Fallback limits applied when a target has no explicit record in `rate_limits`. */
+/** Fallback limits applied when an app/user/api_key has no explicit `rate_limits` record. */
 const DEFAULT_QPS = 10;
 const DEFAULT_RPM = 60;
 
@@ -34,6 +34,18 @@ export async function checkRateLimit(
     .from(rateLimits)
     .where(condition)
     .limit(1);
+
+  // Global bucket with no explicit rate_limits row → NOT rate-limited. A
+  // hard-coded global default (previously DEFAULT_QPS=10 / DEFAULT_RPM=60,
+  // applied because `limit?.qps ?? DEFAULT_QPS` had no global exemption)
+  // silently throttled the ENTIRE gateway on fresh deployments — seed creates
+  // no rate_limits rows, so every pod shared one 10-QPS bucket and any
+  // concurrent client (parallel agent loops, SDK retry storms) got spurious
+  // 429s that looked like upstream rate limits. Per-target defaults below are
+  // fine (they bound a single app/user/key); the global default is opt-in:
+  // create a rate_limits row with targetType='global' (settings page) to
+  // enable gateway-wide throttling.
+  if (!limit && targetType === 'global') return true;
 
   const qps = limit?.qps ?? DEFAULT_QPS;
   const rpm = limit?.rpm ?? DEFAULT_RPM;
