@@ -1,8 +1,6 @@
-import { eq, and } from 'drizzle-orm';
-import { getDb } from '../db/index.js';
-import { rateLimits } from '../db/schema.js';
 import { getRedis } from '../redis/index.js';
 import { getConfig } from '../config/index.js';
+import { getRateLimitConfig } from './quota.js';
 
 /** Fallback limits applied when an app/user/api_key has no explicit `rate_limits` record. */
 const DEFAULT_QPS = 10;
@@ -19,21 +17,10 @@ export async function checkRateLimit(
   targetType: 'global' | 'app' | 'user' | 'api_key',
   targetId: number | null
 ): Promise<boolean> {
-  const db = getDb();
-
-  const condition =
-    targetId !== null
-      ? and(
-          eq(rateLimits.targetType, targetType),
-          eq(rateLimits.targetId, targetId)
-        )
-      : eq(rateLimits.targetType, targetType);
-
-  const [limit] = await db
-    .select()
-    .from(rateLimits)
-    .where(condition)
-    .limit(1);
+  // Reads the rate_limits row via getRateLimitConfig, which caches it in
+  // Redis (5s TTL, invalidated on admin PUT) — this used to be a per-request
+  // DB point query alongside the quota precheck's own read of the same row.
+  const limit = await getRateLimitConfig(targetType, targetId);
 
   // Global bucket with no explicit rate_limits row → NOT rate-limited. A
   // hard-coded global default (previously DEFAULT_QPS=10 / DEFAULT_RPM=60,

@@ -18,10 +18,14 @@ pnpm build                                        # tsup → dist/
 pnpm test                                         # vitest watch
 pnpm exec vitest run tests/x.test.ts              # 单文件
 pnpm db:gen                                       # 生成迁移(自动注入字段中文注释)
-pnpm db:migrate                                   # 执行迁移
+node --env-file=.env --import tsx src/db/migrate.ts   # 执行迁移(见下方坑)
 pnpm db:seed                                      # 初始数据(建 adm_sk_;生产非必须)
 ```
 **启动后端别预检依赖**:直接 `pnpm dev`,不要 netstat/探测 Redis/MySQL(多为远程或 Docker)。看日志判断:`Starting LLM Gateway` 即成功,`exit(1)`/迁移报错才排查。
+
+**坑:`pnpm db:migrate` 脚本不带 `--env-file=.env`**——直接跑在 `jwt.secret` 配置校验即失败退出;用上表的 `node --env-file=.env --import tsx src/db/migrate.ts` 代替(服务运行中跑迁移安全:Redis 锁串行化 + 迁移幂等)。
+
+**本地开发 Redis**:`.env` 指向 `redis://localhost:6379` 无密码;本地无容器时后端启动即 `redis unreachable at startup` 退出。用本地镜像起(Docker Hub 拉不动时勿 `docker pull`,用已有 `redis:8-alpine`):`docker run -d --name llm-gateway-redis -p 6379:6379 redis:8-alpine`。
 
 **管理后台**(Next.js 16, React 19,静态导出):
 ```bash
@@ -65,11 +69,11 @@ pnpm --filter llm-gateway-dashboard lint
 - **Catch-all**(`/*`,注册在所有特定路由后):同链,仅 dedicated 密钥生效
 - **管理路由**(`/admin/*`):auth → adminAuth(拒非 admin JWT)。`/admin/auth` 登录接口注册在管理中间件**之前**
 
-**坑**:`app.route()` 中所有 `/admin/<name>` 子路由必须注册在 `app.route('/admin', adminQuotas)` **之前**——`adminQuotas` 的 `/:type/:id` 捕获任意单段子路径(`/admin/settings`→`type=settings`)。新增 `/admin/<name>` 一律插在 quotas 那行之前。`quotaCheckMiddleware` 对 GET 跳过 token 预估;`extractMaxTokens()` 对 `/images/generations` 返 0,其余按 `max_tokens`→`max_output_tokens`(Responses)→`max_completion_tokens`(CC o系列)顺序取第一个有效值(全缺省/非法才按 `DEFAULT_MAX_TOKENS=4096` 估,2026-09 前只读 `max_tokens` 导致 Responses/o系列请求恒按 4096 估)。
+**坑**:`app.route()` 中所有 `/admin/<name>` 子路由必须注册在 `app.route('/admin', adminQuotas)` **之前**——`adminQuotas` 的 `/:type/:id` 捕获任意单段子路径(`/admin/settings`→`type=settings`)。新增 `/admin/<name>` 一律插在 quotas 那行之前。`quotaCheckMiddleware` 对 GET 跳过 token 预估(也跳过模型名单判定,`/models` 的过滤在路由内做);`extractMaxTokens()` 对 `/images/generations` 返 0,其余按 `max_tokens`→`max_output_tokens`(Responses)→`max_completion_tokens`(CC o系列)顺序取第一个有效值(全缺省/非法才按 `DEFAULT_MAX_TOKENS=4096` 估,2026-09 前只读 `max_tokens` 导致 Responses/o系列请求恒按 4096 估)。
 
 ### 认证系统
 - **JWT**(`/admin/*`):HS256,默认 24h,localStorage;剩 <8h 滑动续期,`X-Renewed-Token` 头下发(**cors 须 `exposeHeaders` 该头**,否则 dev 跨域读不到)。
-- **API Key**:**明文存储+明文匹配**(`validateApiKey` 用 `eq(keySecret,明文)`,不走 bcrypt;脱库即全泄漏,已知 trade-off)。四模式:`usr_sk_`/`app_sk_`/`adm_sk_`/`ded_sk_`。带 `Enc` 后缀字段(`upstream_api_key_enc`/`providers.api_key_enc`)**实际明文**(历史命名)。头兼容 `Authorization Bearer` 与 `x-api-key`(后者兼容 Vercel AI SDK Anthropic provider)。标识头:`X-App-User-Id`(app 模式,自动建 app_users)、`X-Feature-Id`(纯透传无 DB 查询)。
+- **API Key**:**明文存储+明文匹配**(`validateApiKey` 用 `eq(keySecret,明文)`,不走 bcrypt;脱库即全泄漏,已知 trade-off)。四模式:`usr_sk_`/`app_sk_`/`adm_sk_`/`ded_sk_`。带 `Enc` 后缀字段(`upstream_api_key_enc`/`providers.api_key_enc`)**实际明文**(历史命名)。头兼容 `Authorization Bearer` 与 `x-api-key`(后者兼容 Vercel AI SDK Anthropic provider)。标识头:`X-App-User-Id`(app 模式,自动建 app_users)、`X-Feature-Id`(纯透传无 DB 查询)。`api_keys.permissions` JSON 存**按 key 的模型限制**(见「按 Key 的模型限制」节),`AuthContext.permissions` 原样透传、判定零额外查询。
 - **角色**:`super_admin`/`admin`,所有 `/admin/*` 对两角色开放,仅 `/admin/admins` 限超管。JWT 无状态(role 在 token 里),降级/删除后旧 token 过期前仍有效(默认 24h);即时失效需黑名单(未做)。超管保护:禁操作自己、禁降级/删最后超管、删除需先禁用;子管密码留空则系统生成(明文仅返一次)。
 - `requestLogMiddleware` 过滤 JWT 请求(`authMethod==='jwt'`)避免管理流量污染日志。管理员 API 密钥由 `ensureAdminKeyId()` 自动创建(配日志分析时),生产无需手动 seed。
 
@@ -145,6 +149,19 @@ pnpm --filter llm-gateway-dashboard lint
 
 ### 配额执行
 两阶段:请求前预估(取请求体 `max_tokens`)+响应后自动禁用(超限目标 `status=quota_exceeded`)。**惰性自动恢复**:`authMiddleware` 三检查点(key/user/app)遇 `quota_exceeded` 先调 `tryRestoreQuota`(DB 准确,不走5s缓存),当日/月配额均有剩余则改回 `active` 放行,否则429;月配额超限整月不自动恢复。手动 `POST /admin/:type/:id/restore`。配额缓存存 Redis、TTL5s、多实例共享、乐观递增走 Lua 原子;Redis 不可达读 miss 回退 DB。预检用缓存(乐观有界,authMiddleware 查 status 兜底),响应后禁用走 `sumTokensUsed` 查 DB(准确最终一致)。**坑:日/月配额按北京时间切边**(`src/services/quota.ts` `getDayStart`/`getMonthStart`,`QUOTA_TZ_OFFSET_MS`,非 UTC)。
+- **`rate_limits` 配置缓存(2026-09)**:`getRateLimitConfig` 内部走 Redis 缓存(key `ratelimit:cfg:{type}:{id}`,TTL5s,**"无配置行"的 null 也缓存**——多数目标无行,缓存缺失才是省查询大头)。原先是每请求 2~6 次无缓存点查(预检每目标一次+响应后 checkQuota 再一次+限流一次)。`PUT /admin/rate-limits` 保存后显式 `invalidateRateLimitConfig` 立即生效;直接改 DB 的旁路最多 5s 延迟。缓存行只存业务字段(无时间戳,Date 不过 JSON)。`checkRateLimit` 复用 `getRateLimitConfig`(删除自己的每请求 DB 查询)。Redis 故障 fail-open=回退每请求查 DB。
+- **响应后禁用检查并行化**:`checkAndDisableIfQuotaExceeded` 用 `Promise.all` 并行跑各目标 `checkQuota`(原串行 for 三目标=3×查询延迟),但**按 app→user→api_key 顺序遍历结果、只禁第一个超限目标**——优先序语义与串行版一致,钉死于 `usage-track-quota.test.ts`。
+- **模型级窗口索引**:`usage_records` 有 `idx_usage_records_api_key_model_record_time (api_key_id, model, record_time)`——桶索引 `(api_key_id, record_time, model, provider)` 的 record_time 在 model 前,时间范围扫描无法 seek 到单模型(要扫窗口内全行再过滤);新索引让模型级聚合(`sumTokensUsed(...,model)`/`getUsageByModelForKey`)等值命中 (key,model) 后范围扫 record_time,热 key 扫描量从 小时×模型×provider 降到 小时×provider。
+
+### 按 Key 的模型限制(modelPolicy,2026-09)
+每个 API key 可配**可用模型名单 + 按模型日/月 Token 配额**,存 `api_keys.permissions` JSON 的 `modelPolicy` 键(零迁移;`{mode:'all'|'allow'|'block', models:[虚拟模型ID], limits:{模型ID:{dailyTokens,monthlyTokens}}}`,缺省/`all`/解析失败=全部可用不限量)。领域逻辑单一真相源 `src/services/model-policy.ts`(`parseModelPolicy` **fail-open**:畸形数据视为不限制+warn 日志,坏数据不能锁死 key;`isModelAllowed`/`getModelLimit`)。
+- **判定收口在 `quotaCheckMiddleware`**(已解析 body、已跳过 GET/dedicated):读 `body.model` 字符串 → 名单不过 → **403 `model_not_allowed`**(`Errors.modelNotAllowed`,Anthropic 侧 type=`permission_error`)→ 过名单再查 `getModelLimit` 预检(前瞻判据 `used+estimated>limit` 同总量配额,429 消息带模型名)。**403 优先于总量 429**(权限答案先于配额答案)。**坑:必须按 `body.model` 字符串判定而非查 virtual_models**——`resolveModel` 的 PREFIX_MAP 前缀兜底(未登记 `gpt-*`/`claude-*` 名字也能路由)是名单旁路,按请求字符串匹配天然堵住。embeddings/images/3 条 LLM 路由+catch-all 全走此中间件天然覆盖;body 无 model 字段跳过判定。
+- **模型级超限不写 `status=quota_exceeded`**(那是 key/user/app 级总量机制,禁整个 key 会误伤其他模型)——只靠预检 429 拦截,窗口滚动天然恢复。
+- **口径不变量:`usage.model` 记虚拟模型名**(路由 `c.set('usage',{model:modelId})`),与 `body.model` 同词表——预检(`sumTokensUsed(...,model?)`)、记账(`usage_records.model`)、递增桶三者必须同名,换 realModel 会让配额永不命中。
+- **缓存**:模型桶 key `quota:api_key:{id}:model:{model}`(总量桶 `quota:{type}:{id}` 加后缀),`usage-track` **无条件递增**(Lua 对不存在 key no-op,未配 limits 的模型零开销);`quota-cache.ts` 本体零改动。
+- **admin**:POST/PATCH `/admin/api-keys` 对 `permissions.modelPolicy` Zod 校验(畸形 400,防止坏策略落库后 fail-open 静默丢弃管理员意图;其余 permissions 键原样保留、整体替换语义不变);`GET /admin/quotas/api_keys/:id` 附 `modelPolicy`+`models` 段(limits 键 ∪ 本月有用量的模型,数据源 `getUsageByModelForKey` 一次 GROUP BY 双窗 CASE 聚合,SUM 已 `Number()`)。前端「模型限制」对话框(`model-policy-dialog.tsx`)+「模型」列 badge;多选组件 `inline-multi-combobox.tsx`(仿 InlineCombobox 无 Portal,Dialog 内安全)。**block 模式 limits 无意义**(limits 键=被 block 的模型,先被名单拒绝),前端 block 模式隐藏配额输入、保存时丢弃。
+- **`GET /openai/v1/models` 按名单过滤**(allow→`inArray`、block→`notInArray`;allow 空名单直接返空列表不查库——`IN ()` 非法 SQL);dedicated 请求到不了此路由(先被 dedicatedProxy 透传)。
+- **懒初始化 logger 坑**:`model-policy.ts` 顶层若立即 `createLogger()` 会在 `loadConfig()` 前的测试环境炸(`getConfig()` 抛错),须仿 `admin-auth.ts` 惰性创建。
 
 ### Token 统计与配额口径(含 Anthropic prompt cache)
 `usage_records`(小时聚合)与 `request_logs`(明细)各有四列:`prompt_tokens`/`completion_tokens`/`cache_read_tokens`/`cache_creation_tokens`。**`total_tokens` 才是配额口径**(`sumTokensUsed` 的 `SUM(total_tokens)`)。
@@ -155,7 +172,7 @@ pnpm --filter llm-gateway-dashboard lint
 - **坑**:`getUsageByFeature`/`getUsageByAppUser` 的 `totalTokens` 是现算 `SUM(prompt)+SUM(completion)+SUM(cache_read)+SUM(cache_creation)`,**不含 cache 就少算**;务必 **per-column `COALESCE`**(每个 SUM 各自包 `COALESCE(...,0)` 再相加,不能只外层套一个)——`request_logs` 的 `cache_*` 列可空无默认,纯 OpenAI 分组全 NULL 时单层 COALESCE 让整体兜底0(表现:功能/用户用量页总 token 恒为0,而总览页读 `usage_records.total_tokens` 正常)。summary/per-group select/orderBy 三处共享表达式(两函数共6处)。
 
 ### 限流(Redis 令牌桶)
-令牌桶存 Redis(`RATE_LIMIT_LUA` 一次 eval 原子处理 qps+rpm 两桶),**多实例共享**(进程内 Map 在 N 副本放大 N 倍,Redis 化主因)。桶空闲2h自动 `PEXPIRE`,无进程内定时器。**fail-open**:Redis 不可达 `checkRateLimit` 放行。限流对象(global/app/user/api_key)按 `rate_limits` 表查询,无记录 fallback 到 `DEFAULT_QPS=10`/`DEFAULT_RPM=60`(`src/services/rate-limiter.ts`,已移除 env 可配)。**坑:global 无记录=不限流(opt-in,2026-09 改)**——原先 global 也吃 10 QPS/60 RPM 硬编码默认,而 seed 不建任何 rate_limits 行,全新部署整个网关被一只 10 QPS 桶卡死(并行 agent/SDK 重试风暴必触发"伪上游 429");现仅 app/user/api_key 保留单目标默认兜底,全局限流须显式建 `targetType='global'` 行(设置页)才生效,钉死于 `tests/rate-limiter.test.ts`。
+令牌桶存 Redis(`RATE_LIMIT_LUA` 一次 eval 原子处理 qps+rpm 两桶),**多实例共享**(进程内 Map 在 N 副本放大 N 倍,Redis 化主因)。桶空闲2h自动 `PEXPIRE`,无进程内定时器。**fail-open**:Redis 不可达 `checkRateLimit` 放行。限流对象(global/app/user/api_key)的配置经 `getRateLimitConfig`(Redis 5s 配置缓存,见「配额执行」)读取,无记录 fallback 到 `DEFAULT_QPS=10`/`DEFAULT_RPM=60`(`src/services/rate-limiter.ts`,已移除 env 可配)。**坑:global 无记录=不限流(opt-in,2026-09 改)**——原先 global 也吃 10 QPS/60 RPM 硬编码默认,而 seed 不建任何 rate_limits 行,全新部署整个网关被一只 10 QPS 桶卡死(并行 agent/SDK 重试风暴必触发"伪上游 429");现仅 app/user/api_key 保留单目标默认兜底,全局限流须显式建 `targetType='global'` 行(设置页)才生效,钉死于 `tests/rate-limiter.test.ts`。
 
 ### Redis(多实例共享)
 限流桶/配额缓存/归档锁+done标记/迁移锁 共用(`src/redis/`:单例+3个Lua+`lock.ts` 分布式锁)。**强依赖**:`initRedis()` ping,连不上 `exit(1)`;运行时抖动 fail-open。必配 `REDIS_URL`(+`REDIS_PASSWORD`,ACL 加 `REDIS_USERNAME`),TLS 用 `rediss://`。**坑**:不用 ioredis `keyPrefix`(不作用于 Lua 内 `redis.call`),前缀各 service 用 `cfg.keyPrefix` 手拼;必配 `commandTimeout`(env `REDIS_COMMAND_TIMEOUT_MS` 默认1000——`maxRetriesPerRequest` 不管慢响应,不配则 Redis 卡顿拖垮限流、fail-open 失效);锁 value 用 `podId`、release 走 Lua 校验防误删。
@@ -172,7 +189,7 @@ Next.js 16(App Router)+React 19,静态导出由 Hono 在 `/dashboard/*` 托管�
 
 ## 关键约定
 - **ESM 模块**:`"type":"module"`,所有 import 路径带 `.js`(即使源是 `.ts`)。tsup 单文件 ESM。
-- **Drizzle ORM**:原生模式——不定义 `relations()`,所有 JOIN 手写 SELECT。**drizzle 不支持声明式 column/table comment**(issue [#5203](https://github.com/drizzle-team/drizzle-orm/issues/5203));字段中文注释走自动注入。列中文 desc **真相源是 `src/agents/query-table-schema.ts`**(`query_table` 工具描述与 DB COMMENT 同源);`src/db/column-comments.ts` 从它派生(13 可查表)+ 本地手补 `admin_users`,供 `apply-comments.ts` 注入 COMMENT。改字段工作流:①改 `schema.ts`;②若该列应可查,在 `query-table-schema.ts` 补 `ColumnMeta`(desc/kind/sensitive/heavy);③`pnpm db:gen`(drizzle-kit generate + apply-comments + check-schema-sync:校验白名单列名与 schema.ts 一致,硬错退出/漏登记软警告);④`pnpm db:migrate`。migrator 只认 journal、不读 snapshot,故纯注释迁移无需 snapshot。
+- **Drizzle ORM**:原生模式——不定义 `relations()`,所有 JOIN 手写 SELECT。**drizzle 不支持声明式 column/table comment**(issue [#5203](https://github.com/drizzle-team/drizzle-orm/issues/5203));字段中文注释走自动注入。列中文 desc **真相源是 `src/agents/query-table-schema.ts`**(`query_table` 工具描述与 DB COMMENT 同源);`src/db/column-comments.ts` 从它派生(13 可查表)+ 本地手补 `admin_users`,供 `apply-comments.ts` 注入 COMMENT。改字段工作流:①改 `schema.ts`;②若该列应可查,在 `query-table-schema.ts` 补 `ColumnMeta`(desc/kind/sensitive/heavy);③`pnpm db:gen`(drizzle-kit generate + apply-comments + check-schema-sync:校验白名单列名与 schema.ts 一致,硬错退出/漏登记软警告);④`pnpm db:migrate`。migrator 只认 journal、不读 snapshot,故纯注释迁移无需 snapshot。**坑:`apply-comments.ts` 只改写 journal 最新迁移的 SQL 文件、且跳过已含 COMMENT 的列**——仅改 `query-table-schema.ts` 的 desc(不动 schema.ts)时输出「注入 0 条 COMMENT」,运行时 `query_table` 工具描述即时生效,但**已部署库该列的旧 COMMENT 不回填**(纯文档性差异,一般不值得为它建迁移)。
 - **数据库时区**(连接 session 固定 UTC,与容器/进程时区无关):drizzle mysql2 session 对所有 TIMESTAMP/DATETIME/DATE 强制 `typeCast: field.string()`,timestamp/datetime 当 UTC 解析(`new Date(value+"+0000")`)——**只有 server 吐 UTC 字面量(session=UTC)读才对**。`src/db/index.ts` `pool.on('connection') SET SESSION time_zone='+00:00'` 钉死 UTC;配 `mysql2 timezone:'+00:00'`。核对真值用 `UNIX_TIMESTAMP(col)`。**读**:经 drizzle 读出即真实 UTC `Date`(`.toISOString()` 带 `Z`)。**写**(Date→DATETIME):`expires_at`/`last_login_at`/`archived_at` 用 `formatUtcDateTime()`(`src/db/repositories/logs.ts`);`updated_at` 有 `ON UPDATE CURRENT_TIMESTAMP` 不要显式写。**前端显示**:后端返 UTC ISO(带 `Z`),前端 `new Date()` 按 UTC 解析,`formatDateTime`/`formatDate` 用 `timeZone:'Asia/Shanghai'`。**不要去 `Z`**。**列类型全 DATETIME**(Y2038;drizzle 对 TIMESTAMP/DATETIME 映射等价;TIMESTAMP→DATETIME 迁移须 session=UTC 执行,迁移 0005 顶部 `SET time_zone='+00:00'` 兜底)。
 - **错误处理**:`GatewayError` 类 + 错误码;`formatErrorForPath()` 按协议(OpenAI/Anthropic)适配。
 - **UI**:全中文(zh-CN),shadcn/ui + Tailwind。
@@ -184,10 +201,11 @@ Next.js 16(App Router)+React 19,静态导出由 Hono 在 `/dashboard/*` 托管�
 Vitest,mock Hono 上下文,在 `tests/`。无 DB 集成测试——Provider/配额测试均 mock DB。`pnpm test` 默认 watch;CI 用 `pnpm exec vitest run`。
 
 **改对应子系统前先跑相关测试**(许多测试钉死上文「坑」不变量):
-- **配额**:`quota.test.ts`、`quota-check.test.ts`、`quota-cache.test.ts`、`usage-track-quota.test.ts`、`auth-quota-check.test.ts`、`usage-repository.test.ts`(钉死 per-column COALESCE)。
+- **配额**:`quota.test.ts`、`quota-check.test.ts`、`quota-cache.test.ts`(用量缓存 + `rate_limits` 配置缓存:null 标记与 miss 区分、失效、global 哨兵 key)、`usage-track-quota.test.ts`(禁用优先序:并行全查、仅禁第一个)、`auth-quota-check.test.ts`、`usage-repository.test.ts`(钉死 per-column COALESCE)。
+- **模型限制**:`model-policy.test.ts`(三态名单/畸形 fail-open/getModelLimit)、`quota-check.test.ts` 模型策略组(403 三态、模型级 429 带模型名、403 优先于总量 429、无 model 字段跳过、按模型用量查询参数)、`admin-api-keys-route.test.ts`(modelPolicy 校验 400/透传)、`models-route.test.ts`(allow/block/all 过滤、空 allowlist 返空不查库)、`usage-track-quota.test.ts` 模型桶递增组(key 形如 `quota:api_key:1:model:gpt-4o`)。
 - **请求日志**:`request-id.test.ts`、`request-log.test.ts`(钉死两表 upsert)、`request-log-middleware.test.ts`(钉死流式跳过判据=`c.get('usage')` 存在性、dedicated 429 回归)、`log-dedup.test.ts`、`log-archive.test.ts`、`log-archive-scheduler.test.ts`(钉死同日最多一次+崩溃可恢复)。
 - **Provider/路由**:`openai-provider.test.ts`、`anthropic-provider.test.ts`(cache 拆解+`message_delta` 守卫+tool_use `input_json_delta` 累积成 `tool_call`)、`openai-responses-route.test.ts`(协议转换+estimateFallback opt-in)、`openai-chat-completions-route.test.ts`(流式 `finish_reason` 三路径)、`anthropic-messages-route.test.ts`(流式 tool_use content_block 合成)、`provider-stream.test.ts`(钉死 `openStream` 4xx 原样/5xx→502)。
 - **认证/管理路由**:`api-key.test.ts`、`admin-quotas.test.ts`、`admin-usage-route.test.ts`、`admin-apps-route.test.ts`(PATCH 用户/功能备注)。
 - **报表**:`reports.test.ts`(钉死共享过滤 `buildRequestLogConditions`/`logFilterNeedsDetails` 代理 + 逐列 COALESCE + CONVERT_TZ 北京分桶 + by-status NULL 归组 + 错误率不除零 + 双分支 leftJoin + `{data}` 信封 + query 解析;用 thenable chain mock 模拟 drizzle 构建器)。
 - **智能分析 Agent**:`gateway-model.test.ts`(桥接双向转换+真流式+reasoning+SDK Runner tool 循环)、`analysis-tools.test.ts`(.invoke JSON 字符串约定+strict:false 清洗+query_table 注入面+JOIN 测试组)。
-- **基础设施**:`redis-lock.test.ts`、`token-estimate.test.ts`(钉死 isTokenGeneratingPath 白名单)、`headers.test.ts`(钉死 rawHeaderPairs 保留大小写)、`rate-limiter.test.ts`(钉死 global 无记录=不限流 opt-in、单目标默认 10/60 仍在、fail-open)、`config.test.ts`、`errors.test.ts`、`setup.test.ts`;`embeddings-images-route.test.ts` 钉死两透传路由上游 ≥400 落库(isError usage)。
+- **基础设施**:`redis-lock.test.ts`、`token-estimate.test.ts`(钉死 isTokenGeneratingPath 白名单)、`headers.test.ts`(钉死 rawHeaderPairs 保留大小写)、`rate-limiter.test.ts`(钉死 global 无记录=不限流 opt-in、单目标默认 10/60 仍在、fail-open、经 `getRateLimitConfig` 缓存只查一次 DB)、`config.test.ts`、`errors.test.ts`、`setup.test.ts`;`embeddings-images-route.test.ts` 钉死两透传路由上游 ≥400 落库(isError usage)。

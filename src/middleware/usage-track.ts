@@ -82,12 +82,22 @@ async function checkAndDisableIfQuotaExceeded(auth: AuthContext): Promise<void> 
   // trackUsage() ran above and was awaited, so the persisted usage includes the
   // current request's tokens. checkQuota does NOT add them again — that would
   // double-count and disable targets early.
-  for (const check of buildQuotaChecks(auth)) {
-    const { over, reason } = await checkQuota(check);
+  //
+  // Checks run in parallel (each target's checkQuota is an independent
+  // config read + up to two aggregate queries — serial await tripled the
+  // post-response latency for 3-target keys), but the disable decision walks
+  // the results in order so the priority (app → user → api_key) matches the
+  // previous serial loop: still "disable only the first exceeded target".
+  const checks = buildQuotaChecks(auth);
+  const results = await Promise.all(
+    checks.map(async (check) => ({ check, ...(await checkQuota(check)) })),
+  );
+
+  for (const { check, over, reason } of results) {
     if (over) {
       await setTargetStatus(check.type, check.id, 'quota_exceeded');
       getLogger().warn({ check, reason }, 'Quota exceeded, target disabled');
-      break; // Only disable the first exceeded target
+      break; // Only disable the first (highest-priority) exceeded target
     }
   }
 }
@@ -118,6 +128,14 @@ export async function usageTrackMiddleware(c: Context, next: Next) {
     if (auth.appId != null) {
       await incrementQuotaCache(`quota:app:${auth.appId}`, totalTokens);
     }
+    // Per-key model bucket (virtual model id, same vocabulary as body.model —
+    // see trackUsage). Incremented unconditionally: the Lua script is a no-op
+    // on absent keys, so this costs nothing unless the precheck seeded the
+    // bucket (i.e. this key has a per-model limit on this model).
+    await incrementQuotaCache(
+      `quota:api_key:${auth.keyId}:model:${usage.model}`,
+      totalTokens,
+    );
 
     // Check and auto-disable if any target exceeded quota
     await checkAndDisableIfQuotaExceeded(auth);

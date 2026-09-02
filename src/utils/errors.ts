@@ -4,6 +4,7 @@ export enum GatewayErrorCode {
   RATE_LIMITED = 'rate_limit_exceeded',
   QUOTA_EXCEEDED = 'quota_exceeded',
   MODEL_NOT_FOUND = 'model_not_found',
+  MODEL_NOT_ALLOWED = 'model_not_allowed',
   PROVIDER_ERROR = 'provider_error',
   UPSTREAM_TIMEOUT = 'upstream_timeout',
   INVALID_REQUEST = 'invalid_request',
@@ -15,7 +16,7 @@ export enum GatewayErrorCode {
  * Matches a subset of Hono's ContentfulStatusCode so values are directly
  * assignable when calling c.json(body, error.statusCode).
  */
-export type GatewayStatusCode = 400 | 401 | 404 | 429 | 500 | 502 | 504;
+export type GatewayStatusCode = 400 | 401 | 403 | 404 | 429 | 500 | 502 | 504;
 
 export class GatewayError extends Error {
   constructor(
@@ -45,6 +46,7 @@ export function formatAnthropicError(error: GatewayError): object {
   const typeMap: Record<string, string> = {
     [GatewayErrorCode.RATE_LIMITED]: 'rate_limit_error',
     [GatewayErrorCode.AUTH_FAILED]: 'authentication_error',
+    [GatewayErrorCode.MODEL_NOT_ALLOWED]: 'permission_error',
     [GatewayErrorCode.INVALID_REQUEST]: 'invalid_request_error',
     [GatewayErrorCode.PROVIDER_ERROR]: 'api_error',
     [GatewayErrorCode.INTERNAL_ERROR]: 'api_error',
@@ -83,6 +85,13 @@ export const Errors = {
 
   modelNotFound: (model: string) =>
     new GatewayError(GatewayErrorCode.MODEL_NOT_FOUND, `Model not found: ${model}`, 404),
+
+  modelNotAllowed: (model: string) =>
+    new GatewayError(
+      GatewayErrorCode.MODEL_NOT_ALLOWED,
+      `Model not allowed for this API key: ${model}`,
+      403,
+    ),
 
   providerError: (msg: string) =>
     new GatewayError(GatewayErrorCode.PROVIDER_ERROR, msg, 502),

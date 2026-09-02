@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { getDb } from '../../db/index.js';
 import { rateLimits } from '../../db/schema.js';
 import { eq, and, sql, type SQL } from 'drizzle-orm';
+import { invalidateRateLimitConfig } from '../../services/quota-cache.js';
 
 export const adminRateLimits = new Hono();
 
@@ -74,6 +75,10 @@ adminRateLimits.put('/', async (c) => {
       })
       .where(eq(rateLimits.id, existing[0].id));
 
+    // Drop the cached config row so the new limits apply on the very next
+    // request instead of after the 5s TTL.
+    await invalidateRateLimitConfig(targetType, targetId);
+
     const updated = await db
       .select()
       .from(rateLimits)
@@ -91,6 +96,10 @@ adminRateLimits.put('/', async (c) => {
       dailyTokens: dailyTokens ?? null,
       monthlyTokens: monthlyTokens ?? null,
     });
+
+    // A previously-cached "no config" entry must go too — this target may
+    // have been read (and its absence cached) moments before creation.
+    await invalidateRateLimitConfig(targetType, targetId);
 
     const inserted = await db
       .select()

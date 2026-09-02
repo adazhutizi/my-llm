@@ -35,6 +35,10 @@ const fakeRedis = vi.hoisted(() => {
       e.expiresAt = Date.now() + ttlSec * 1000;
       return 1;
     }),
+    del: vi.fn(async (key: string) => {
+      store.delete(key);
+      return 1;
+    }),
   };
 });
 
@@ -50,6 +54,9 @@ import {
   getQuotaCache,
   setQuotaCache,
   incrementQuotaCache,
+  getRateLimitConfigCache,
+  setRateLimitConfigCache,
+  invalidateRateLimitConfig,
 } from '../src/services/quota-cache.js';
 
 beforeEach(() => {
@@ -102,5 +109,40 @@ describe('QuotaCache (Redis-backed)', () => {
     await incrementQuotaCache('quota:api_key:1', 50);
     const entry = await getQuotaCache('quota:api_key:1');
     expect(entry!.dailyUsed).toBe(150);
+  });
+});
+
+describe('RateLimitConfig cache', () => {
+  const row = {
+    id: 1,
+    targetType: 'api_key',
+    targetId: 42,
+    rpm: 60,
+    qps: 10,
+    dailyTokens: 1000,
+    monthlyTokens: null,
+  };
+
+  it('returns undefined on miss and null-vs-row round-trips distinctly', async () => {
+    // undefined = miss (caller queries DB); null = "no config" cached — the
+    // distinction is what lets absent configs skip the DB too.
+    expect(await getRateLimitConfigCache('ratelimit:cfg:api_key:42')).toBeUndefined();
+
+    await setRateLimitConfigCache('ratelimit:cfg:api_key:42', row);
+    expect(await getRateLimitConfigCache('ratelimit:cfg:api_key:42')).toEqual(row);
+
+    await setRateLimitConfigCache('ratelimit:cfg:user:7', null);
+    expect(await getRateLimitConfigCache('ratelimit:cfg:user:7')).toBeNull();
+  });
+
+  it('invalidate removes the cached row', async () => {
+    await setRateLimitConfigCache('ratelimit:cfg:api_key:42', row);
+    await invalidateRateLimitConfig('api_key', 42);
+    expect(await getRateLimitConfigCache('ratelimit:cfg:api_key:42')).toBeUndefined();
+  });
+
+  it('uses the global sentinel key for null target ids', async () => {
+    await setRateLimitConfigCache('ratelimit:cfg:global:global', null);
+    expect(await getRateLimitConfigCache('ratelimit:cfg:global:global')).toBeNull();
   });
 });

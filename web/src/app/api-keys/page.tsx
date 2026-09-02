@@ -34,11 +34,12 @@ import {
 } from '@/components/ui/alert-dialog';
 import { listApiKeys, createApiKey, updateApiKey, revokeApiKey, deleteApiKey, restoreTarget, revealApiKey, listUsers, listApps, listProviders } from '@/lib/api';
 import type { ApiKey, CreateApiKeyResponse, UpdateApiKeyRequest, User, App, Provider } from '@/lib/types';
-import { Loader2, Copy, Check, Settings2, Eye, EyeOff, ScrollText, PieChart, Search, Pencil } from 'lucide-react';
+import { Loader2, Copy, Check, Settings2, Eye, EyeOff, ScrollText, PieChart, Search, Pencil, Boxes } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { InlineCombobox } from '@/components/inline-combobox';
 import { QuotaConfigDialog } from '@/components/quota-config-dialog';
 import { QuotaIndicator } from '@/components/quota-indicator';
+import { ModelPolicyDialog } from '@/components/model-policy-dialog';
 import { formatDate, toBeijingDateTimeLocal } from '@/lib/utils';
 
 export default function ApiKeysPage() {
@@ -78,6 +79,9 @@ export default function ApiKeysPage() {
 
   // Quota config
   const [quotaTarget, setQuotaTarget] = useState<ApiKey | null>(null);
+
+  // Model policy (allow/block list + per-model limits)
+  const [modelPolicyTarget, setModelPolicyTarget] = useState<ApiKey | null>(null);
 
   // Edit dialog
   const [editTarget, setEditTarget] = useState<ApiKey | null>(null);
@@ -313,6 +317,30 @@ export default function ApiKeysPage() {
       render: (key: ApiKey) => <QuotaIndicator type="api_keys" id={key.id} />,
     },
     {
+      key: 'modelPolicy',
+      header: '模型限制',
+      render: (key: ApiKey) => {
+        // Dedicated keys bypass virtual-model routing entirely
+        if (key.mode === 'dedicated') {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+        const policy = key.permissions?.modelPolicy;
+        if (!policy || policy.mode === 'all') {
+          return (
+            <span className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset bg-gray-50 text-gray-600 ring-gray-500/20">全部</span>
+          );
+        }
+        if (policy.mode === 'allow') {
+          return (
+            <span className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset bg-green-50 text-green-700 ring-green-600/20">允许 {policy.models.length}</span>
+          );
+        }
+        return (
+          <span className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset bg-red-50 text-red-700 ring-red-600/20">禁用 {policy.models.length}</span>
+        );
+      },
+    },
+    {
       key: 'createdAt',
       header: '创建时间',
       render: (key: ApiKey) => formatDate(key.createdAt),
@@ -358,6 +386,16 @@ export default function ApiKeysPage() {
             <Settings2 className="mr-1 h-4 w-4" />
             配额
           </Button>
+          {key.mode !== 'dedicated' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => { e.stopPropagation(); setModelPolicyTarget(key); }}
+            >
+              <Boxes className="mr-1 h-4 w-4" />
+              模型
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -621,6 +659,16 @@ export default function ApiKeysPage() {
             type="api_key"
             id={quotaTarget.id}
             label={`API 密钥: ${quotaTarget.name} (#${quotaTarget.id})`}
+          />
+        )}
+
+        {/* Model policy config */}
+        {modelPolicyTarget && (
+          <ModelPolicyDialog
+            open={!!modelPolicyTarget}
+            onOpenChange={(open) => { if (!open) setModelPolicyTarget(null); }}
+            apiKey={modelPolicyTarget}
+            onSaved={load}
           />
         )}
 

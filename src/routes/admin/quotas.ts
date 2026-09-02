@@ -5,11 +5,13 @@ import { apiKeys, users, apps } from '../../db/schema.js';
 import {
   sumTokensUsed,
   getRateLimitConfig,
+  getUsageByModelForKey,
   getDayStart,
   getMonthStart,
   getPrevMonthStart,
   type QuotaTargetType,
 } from '../../services/quota.js';
+import { parseModelPolicy } from '../../services/model-policy.js';
 
 export const adminQuotas = new Hono();
 
@@ -134,6 +136,36 @@ adminQuotas.get('/quotas/:type/:id', async (c) => {
     monthUsage.percentage = Math.round((monthlyUsed / limit.monthlyTokens) * 100);
   }
 
+  // API keys additionally expose their per-model policy + per-model usage —
+  // the data behind the admin "模型限制" dialog. Models listed = every model
+  // with a configured limit ∪ every model the key actually used this month.
+  let modelPolicy: ReturnType<typeof parseModelPolicy> = null;
+  let modelUsage: Array<{ model: string; limits: Record<string, number | null>; todayTokens: number; monthTokens: number }> = [];
+  if (resolved.type === 'api_key') {
+    // resolveTarget's table union types `target` to the common columns, so
+    // narrow here — the row provably came from api_keys in this branch.
+    modelPolicy = parseModelPolicy((target as typeof apiKeys.$inferSelect).permissions);
+    const usageByModel = await getUsageByModelForKey(id);
+
+    const seen = new Set<string>([
+      ...(modelPolicy?.limits ? Object.keys(modelPolicy.limits) : []),
+      ...usageByModel.map((row) => row.model),
+    ]);
+    modelUsage = [...seen].sort().map((model) => {
+      const usage = usageByModel.find((row) => row.model === model);
+      const modelLimit = modelPolicy?.limits?.[model];
+      return {
+        model,
+        limits: {
+          dailyTokens: modelLimit?.dailyTokens ?? null,
+          monthlyTokens: modelLimit?.monthlyTokens ?? null,
+        },
+        todayTokens: usage?.todayTokens ?? 0,
+        monthTokens: usage?.monthTokens ?? 0,
+      };
+    });
+  }
+
   return c.json({
     type: resolved.type,
     id,
@@ -144,5 +176,6 @@ adminQuotas.get('/quotas/:type/:id', async (c) => {
       month: monthUsage,
       lastMonth: { tokens: lastMonthUsed },
     },
+    ...(resolved.type === 'api_key' ? { modelPolicy, models: modelUsage } : {}),
   });
 });

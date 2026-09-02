@@ -15,10 +15,25 @@ const fakeDb = vi.hoisted(() => {
   };
 });
 
-const fakeRedis = vi.hoisted(() => ({
-  // 1 = allowed, 0 = throttled; default allow so tests isolate the DB-row logic
-  rateLimit: vi.fn(async () => 1),
-}));
+const fakeRedis = vi.hoisted(() => {
+  // In-memory GET/SET backing the rate_limits config cache (getRateLimitConfig
+  // reads through it), with real key semantics so cache hits can be asserted.
+  const store = new Map<string, string>();
+  return {
+    store,
+    get: vi.fn(async (key: string) => (store.has(key) ? store.get(key)! : null)),
+    set: vi.fn(async (key: string, val: string) => {
+      store.set(key, val);
+      return 'OK';
+    }),
+    del: vi.fn(async (key: string) => {
+      store.delete(key);
+      return 1;
+    }),
+    // 1 = allowed, 0 = throttled; default allow so tests isolate the DB-row logic
+    rateLimit: vi.fn(async () => 1),
+  };
+});
 
 vi.mock('../src/db/index.js', () => ({ getDb: () => fakeDb }));
 vi.mock('../src/config/index.js', () => ({
@@ -30,6 +45,8 @@ import { checkRateLimit } from '../src/services/rate-limiter.js';
 
 beforeEach(() => {
   fakeDb.setRows([]);
+  fakeDb.select.mockClear();
+  fakeRedis.store.clear();
   fakeRedis.rateLimit.mockClear().mockResolvedValue(1);
 });
 
@@ -97,5 +114,18 @@ describe('checkRateLimit', () => {
     fakeRedis.rateLimit.mockRejectedValue(new Error('connection lost'));
 
     await expect(checkRateLimit('api_key', 42)).resolves.toBe(true);
+  });
+
+  it('caches the rate_limits row: the DB is queried only on the first call', async () => {
+    // checkRateLimit goes through getRateLimitConfig, whose Redis-backed
+    // config cache (5s TTL, invalidated on admin PUT) replaced a per-request
+    // DB point query on the hot path.
+    fakeDb.setRows([{ targetType: 'api_key', targetId: 42, qps: 5, rpm: 30 }]);
+
+    await checkRateLimit('api_key', 42);
+    await checkRateLimit('api_key', 42);
+
+    expect(fakeDb.select).toHaveBeenCalledTimes(1);
+    expect(fakeRedis.store.has('llmgw:ratelimit:cfg:api_key:42')).toBe(true);
   });
 });

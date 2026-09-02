@@ -1,0 +1,1 @@
+CREATE INDEX `idx_usage_records_api_key_model_record_time` ON `usage_records` (`api_key_id`,`model`,`record_time`);

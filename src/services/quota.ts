@@ -2,6 +2,12 @@ import { eq, and, gte, lt, sql } from 'drizzle-orm';
 import { getDb } from '../db/index.js';
 import { rateLimits, usageRecords, users, apiKeys, apps } from '../db/schema.js';
 import type { AuthContext } from '../middleware/auth.js';
+import {
+  rateLimitConfigCacheKey,
+  getRateLimitConfigCache,
+  setRateLimitConfigCache,
+  type CachedRateLimitRow,
+} from './quota-cache.js';
 
 export const DEFAULT_MAX_TOKENS = 4096;
 
@@ -107,6 +113,9 @@ export function quotaTargetColumn(type: QuotaTargetType): 'apiKeyId' | 'userId' 
  * `until` is optional for backward compatibility (open-ended upper bound).
  * Used for daily/monthly usage (since only) and last-month usage
  * (since = prev month start, until = current month start).
+ * `model` optionally scopes the sum to a single virtual model id (per-key
+ * model limits); usage_records.model stores the same virtual id the client
+ * sent in body.model, so precheck and accounting share one vocabulary.
  *
  * NOTE: this function queries usage_records directly — the 5s precheck cache
  * lives one layer up in quota-check.ts and only caches daily/monthly, so
@@ -116,6 +125,7 @@ export async function sumTokensUsed(
   check: QuotaCheck,
   since: Date,
   until?: Date,
+  model?: string,
 ): Promise<number> {
   const db = getDb();
   const column = usageRecords[quotaTargetColumn(check.type)];
@@ -125,6 +135,7 @@ export async function sumTokensUsed(
     gte(usageRecords.recordTime, since),
   ];
   if (until) conditions.push(lt(usageRecords.recordTime, until));
+  if (model !== undefined) conditions.push(eq(usageRecords.model, model));
 
   const [result] = await db
     .select({
@@ -137,13 +148,59 @@ export async function sumTokensUsed(
 }
 
 /**
+ * Per-model today/month token usage for one API key, for the quota dialog.
+ * One query over the current quota month, grouped by model, with today's
+ * window as a CASE inside the aggregation (avoids a second scan). SUM over
+ * mysql2 returns DECIMAL strings, hence the Number() wraps.
+ */
+export async function getUsageByModelForKey(
+  apiKeyId: number,
+): Promise<Array<{ model: string; todayTokens: number; monthTokens: number }>> {
+  const db = getDb();
+
+  const rows = await db
+    .select({
+      model: usageRecords.model,
+      todayTokens: sql<string>`COALESCE(SUM(CASE WHEN ${usageRecords.recordTime} >= ${getDayStart()} THEN ${usageRecords.totalTokens} ELSE 0 END), 0)`,
+      monthTokens: sql<string>`COALESCE(SUM(${usageRecords.totalTokens}), 0)`,
+    })
+    .from(usageRecords)
+    .where(
+      and(
+        eq(usageRecords.apiKeyId, apiKeyId),
+        gte(usageRecords.recordTime, getMonthStart()),
+      ),
+    )
+    .groupBy(usageRecords.model);
+
+  return rows.map((row) => ({
+    model: row.model,
+    todayTokens: Number(row.todayTokens),
+    monthTokens: Number(row.monthTokens),
+  }));
+}
+
+/**
  * Load rate_limits configuration for a specific target.
  * Returns null if no rate_limits row exists for this target.
+ *
+ * Redis-backed 5s cache (including cached "no row" — most targets have none,
+ * which is where the savings are): this is read on EVERY request (quota
+ * precheck per target, post-response checkQuota, the rate limiter) yet the
+ * config almost never changes — uncached it cost 2-6 point queries per
+ * request. The admin PUT path invalidates explicitly, so config changes
+ * apply immediately; other writers (direct DB edits) land within the TTL.
+ * Callers treat a null return as "no limits" either way, so a stale row
+ * only shifts quota enforcement by ≤5s.
  */
 export async function getRateLimitConfig(
   type: QuotaTargetType | 'global',
   id: number | null,
-) {
+): Promise<CachedRateLimitRow | null> {
+  const cacheKey = rateLimitConfigCacheKey(type, id);
+  const cached = await getRateLimitConfigCache(cacheKey);
+  if (cached !== undefined) return cached;
+
   const db = getDb();
 
   const condition = id !== null
@@ -156,7 +213,22 @@ export async function getRateLimitConfig(
     .where(condition)
     .limit(1);
 
-  return limit ?? null;
+  // Cache only the business fields — Date columns don't round-trip JSON and
+  // no consumer of this function reads the timestamps.
+  const row: CachedRateLimitRow | null = limit
+    ? {
+        id: limit.id,
+        targetType: limit.targetType,
+        targetId: limit.targetId,
+        rpm: limit.rpm,
+        qps: limit.qps,
+        dailyTokens: limit.dailyTokens,
+        monthlyTokens: limit.monthlyTokens,
+      }
+    : null;
+
+  await setRateLimitConfigCache(cacheKey, row);
+  return row;
 }
 
 /**

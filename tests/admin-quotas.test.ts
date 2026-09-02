@@ -21,11 +21,12 @@ vi.mock('../src/services/quota.js', async () => {
     ...actual,
     sumTokensUsed: vi.fn(async () => 0),
     getRateLimitConfig: vi.fn(async () => null),
+    getUsageByModelForKey: vi.fn(async () => []),
   };
 });
 
 import { adminQuotas } from '../src/routes/admin/quotas.js';
-import { sumTokensUsed, getRateLimitConfig } from '../src/services/quota.js';
+import { sumTokensUsed, getRateLimitConfig, getUsageByModelForKey } from '../src/services/quota.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -109,13 +110,14 @@ describe('GET /admin/quotas/:type/:id', () => {
       qps: 10,
       dailyTokens: 10000,
       monthlyTokens: 100000,
-      createdAt: new Date(),
-      updatedAt: new Date(),
     });
     vi.mocked(sumTokensUsed)
       .mockResolvedValueOnce(3000)   // daily
       .mockResolvedValueOnce(25000)  // monthly
       .mockResolvedValueOnce(18000); // lastMonth
+    vi.mocked(getUsageByModelForKey).mockResolvedValue([
+      { model: 'gpt-4o', todayTokens: 2000, monthTokens: 15000 },
+    ]);
 
     // Mock the status lookup
     mockDb.select.mockReturnValue({
@@ -138,5 +140,10 @@ describe('GET /admin/quotas/:type/:id', () => {
     expect(body.usage.month.tokens).toBe(25000);
     expect(body.usage.month.percentage).toBe(25);
     expect(body.usage.lastMonth.tokens).toBe(18000);
+    // api_key targets additionally expose the per-model policy usage section
+    expect(body.modelPolicy).toBeNull();
+    expect(body.models).toEqual([
+      { model: 'gpt-4o', limits: { dailyTokens: null, monthlyTokens: null }, todayTokens: 2000, monthTokens: 15000 },
+    ]);
   });
 });

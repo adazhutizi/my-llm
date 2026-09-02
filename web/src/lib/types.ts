@@ -45,6 +45,19 @@ export interface UsagePoint {
 
 // ── API Keys ──────────────────────────────────────────────────────────────
 
+// ── Per-key model policy (lives inside api_keys.permissions JSON) ──────────
+
+export interface ModelLimit {
+  dailyTokens?: number | null;
+  monthlyTokens?: number | null;
+}
+
+export interface ModelPolicy {
+  mode: 'all' | 'allow' | 'block';
+  models: string[];
+  limits?: Record<string, ModelLimit>;
+}
+
 export interface ApiKey {
   id: number;
   keyPrefix: string;
@@ -57,6 +70,7 @@ export interface ApiKey {
   expiresAt: string | null;
   createdAt: string;
   keySecret?: string;
+  permissions?: { modelPolicy?: ModelPolicy } | null;
   provider?: { id: number; name: string } | null;
   user?: { id: number; username: string } | null;
   app?: { id: number; name: string } | null;
@@ -70,6 +84,7 @@ export interface CreateApiKeyRequest {
   expiresAt?: string;
   providerId?: number;
   upstreamApiKey?: string;
+  permissions?: { modelPolicy?: ModelPolicy } | null;
 }
 
 export interface CreateApiKeyResponse {
@@ -82,6 +97,7 @@ export interface UpdateApiKeyRequest {
   expiresAt?: string | null;
   providerId?: number;
   upstreamApiKey?: string;
+  permissions?: { modelPolicy?: ModelPolicy } | null;
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────
@@ -406,6 +422,15 @@ export interface QuotaStatus {
     month: { tokens: number; percentage?: number };
     lastMonth: { tokens: number };
   };
+  // Only present for api_keys: the parsed model policy and per-model usage
+  // (models with a configured limit ∪ models used this month).
+  modelPolicy?: ModelPolicy | null;
+  models?: Array<{
+    model: string;
+    limits: { dailyTokens: number | null; monthlyTokens: number | null };
+    todayTokens: number;
+    monthTokens: number;
+  }>;
 }
 
 // ── Reports ───────────────────────────────────────────────────────────────

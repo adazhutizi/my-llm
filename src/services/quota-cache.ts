@@ -78,6 +78,66 @@ export async function incrementQuotaCache(key: string, tokens: number): Promise<
  */
 export function clearQuotaCache(): void {}
 
+// ── rate_limits CONFIG cache ─────────────────────────────────────────────────
+// Reads of the rate_limits row happen on EVERY request (quota precheck per
+// target, post-response checkQuota, and the rate limiter) even though the
+// config almost never changes — that was 2-6 uncached point queries per
+// request. Cached here with the same short TTL as usage; the admin PUT path
+// invalidates explicitly so config changes apply immediately.
+
+/** Cached shape: the business fields of a rate_limits row (no timestamps —
+ *  Date doesn't round-trip through JSON and no consumer reads them). */
+export interface CachedRateLimitRow {
+  id: number;
+  targetType: string;
+  targetId: number | null;
+  rpm: number;
+  qps: number;
+  dailyTokens: number | null;
+  monthlyTokens: number | null;
+}
+
+export function rateLimitConfigCacheKey(type: string, id: number | null): string {
+  return `ratelimit:cfg:${type}:${id ?? 'global'}`;
+}
+
+/**
+ * Returns the cached row, null when "no config exists" is itself cached
+ * (the overwhelmingly common case — most targets have no rate_limits row,
+ * so caching the absence is where most of the savings come from), or
+ * undefined on miss / Redis error (caller falls back to the DB).
+ */
+export async function getRateLimitConfigCache(
+  key: string,
+): Promise<CachedRateLimitRow | null | undefined> {
+  try {
+    const raw = await getRedis().get(prefixed(key));
+    if (raw === null) return undefined; // key absent → genuine miss
+    return JSON.parse(raw) as CachedRateLimitRow | null;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function setRateLimitConfigCache(
+  key: string,
+  row: CachedRateLimitRow | null,
+): Promise<void> {
+  try {
+    await getRedis().set(prefixed(key), JSON.stringify(row), 'EX', CACHE_TTL_SEC);
+  } catch {
+    // fail-open: next read misses and re-queries the DB
+  }
+}
+
+export async function invalidateRateLimitConfig(type: string, id: number | null): Promise<void> {
+  try {
+    await getRedis().del(prefixed(rateLimitConfigCacheKey(type, id)));
+  } catch {
+    // fail-open: entry self-expires via TTL anyway
+  }
+}
+
 // ── Cleanup (no-op, preserved for app.ts / index.ts call sites) ──────────────
 // Entries now expire via Redis EX, so there is no in-process cleanup to run.
 

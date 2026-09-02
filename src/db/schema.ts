@@ -228,6 +228,18 @@ export const usageRecords = mysqlTable(
       table.apiKeyId,
       table.recordTime,
     ),
+    // Per-key per-model window aggregates (model-level quota precheck /
+    // getUsageByModelForKey): the bucket index above has record_time BEFORE
+    // model, so a time-range scan can't seek into one model — it reads every
+    // row of the key in the window and filters. With model second, an
+    // equality on (api_key_id, model) + range on record_time lands directly
+    // on that model's rows. Scan size for a hot key drops from
+    // hours × models × providers to hours × providers.
+    apiKeyModelRecordTimeIdx: index('idx_usage_records_api_key_model_record_time').on(
+      table.apiKeyId,
+      table.model,
+      table.recordTime,
+    ),
     appRecordTimeIdx: index('idx_usage_records_app_record_time').on(
       table.appId,
       table.recordTime,

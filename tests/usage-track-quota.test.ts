@@ -56,6 +56,18 @@ vi.mock('../src/services/quota.js', async () => {
   };
 });
 
+// Capture cache increments — the per-key model bucket key shape is part of
+// this feature's contract (must match quota-check's getCachedUsage key).
+vi.mock('../src/services/quota-cache.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/services/quota-cache.js')>(
+    '../src/services/quota-cache.js'
+  );
+  return {
+    ...actual,
+    incrementQuotaCache: vi.fn(async () => {}),
+  };
+});
+
 // Mock getDb — needs insert (trackUsage), update (disableTarget), select (getRateLimitConfig)
 vi.mock('../src/db/index.js', () => ({
   getDb: vi.fn(() => mockDb),
@@ -75,6 +87,7 @@ vi.mock('../src/utils/logger.js', () => ({
 
 import { usageTrackMiddleware } from '../src/middleware/usage-track.js';
 import { checkQuota } from '../src/services/quota.js';
+import { incrementQuotaCache } from '../src/services/quota-cache.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -134,5 +147,53 @@ describe('usageTrackMiddleware - quota auto-disable', () => {
 
     // DB update should have been called (disable triggered)
     expect(mockDb.update).toHaveBeenCalled();
+  });
+
+  it('increments the per-model cache bucket alongside the total buckets', async () => {
+    vi.mocked(checkQuota).mockResolvedValue({ over: false });
+
+    const auth: AuthContext = { mode: 'user', keyId: 1, userId: 10 };
+    const usage: UsageData = {
+      model: 'gpt-4o',
+      provider: 'openai',
+      promptTokens: 100,
+      completionTokens: 200,
+      cacheReadTokens: 50,
+      isError: false,
+    };
+
+    const app = makeApp(auth, usage);
+    await app.request('/test', { method: 'POST' });
+
+    // Unconditional per-model increment (no-op in Redis when the precheck
+    // never seeded the bucket); total = 100 + 200 + 50 = 350.
+    expect(incrementQuotaCache).toHaveBeenCalledWith('quota:api_key:1:model:gpt-4o', 350);
+    expect(incrementQuotaCache).toHaveBeenCalledWith('quota:api_key:1', 350);
+    expect(incrementQuotaCache).toHaveBeenCalledWith('quota:user:10', 350);
+  });
+
+  it('disables only the first target even when all checks run in parallel and all are over', async () => {
+    // Checks are parallelised (Promise.all) for post-response latency; the
+    // disable decision still walks results in app → user → api_key order, so
+    // exactly one status write happens.
+    vi.mocked(checkQuota).mockResolvedValue({
+      over: true,
+      reason: 'daily token quota exceeded',
+    });
+
+    const auth: AuthContext = { mode: 'app', keyId: 3, appId: 1, userId: 2 };
+    const usage: UsageData = {
+      model: 'gpt-4o',
+      provider: 'openai',
+      promptTokens: 100,
+      completionTokens: 200,
+      isError: false,
+    };
+
+    const app = makeApp(auth, usage);
+    await app.request('/test', { method: 'POST' });
+
+    expect(vi.mocked(checkQuota)).toHaveBeenCalledTimes(3); // all targets checked in parallel
+    expect(mockDb.update).toHaveBeenCalledTimes(1); // but only one disable
   });
 });

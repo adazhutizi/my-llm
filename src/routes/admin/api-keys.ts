@@ -9,8 +9,31 @@ import {
   providerExists,
 } from '../../db/repositories/api-keys.js';
 import { createApiKey } from '../../services/api-key.js';
+import { ModelPolicySchema } from '../../services/model-policy.js';
 
 export const adminApiKeys = new Hono();
+
+/**
+ * Validate the modelPolicy key inside a permissions payload. Other
+ * permissions keys pass through untouched (forward compatibility), but a
+ * present modelPolicy must parse cleanly — persisting malformed policy would
+ * make every request on that key fail-open (parseModelPolicy treats bad data
+ * as unrestricted), silently discarding the admin's intent.
+ * Returns an error message or null when acceptable.
+ */
+function checkPermissions(permissions: unknown): string | null {
+  if (!permissions || typeof permissions !== 'object') return null;
+  const modelPolicy = (permissions as Record<string, unknown>).modelPolicy;
+  if (modelPolicy === undefined) return null;
+
+  const parsed = ModelPolicySchema.safeParse(modelPolicy);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const path = issue.path.length > 0 ? ` at "${issue.path.join('.')}"` : '';
+    return `invalid permissions.modelPolicy${path}: ${issue.message}`;
+  }
+  return null;
+}
 
 // GET /admin/api-keys - list API keys
 adminApiKeys.get('/', async (c) => {
@@ -47,6 +70,11 @@ adminApiKeys.post('/', async (c) => {
   const mode = body.mode as 'user' | 'app' | 'admin' | 'dedicated' | undefined;
   if (!mode || !['user', 'app', 'admin', 'dedicated'].includes(mode)) {
     return c.json({ error: 'mode is required and must be user, app, admin, or dedicated' }, 400);
+  }
+
+  const permissionsError = checkPermissions(body.permissions);
+  if (permissionsError) {
+    return c.json({ error: permissionsError }, 400);
   }
 
   const name = (body.name as string) ?? `${mode}-key`;
@@ -142,6 +170,11 @@ adminApiKeys.patch('/:id', async (c) => {
     ? (body.expiresAt ? new Date(body.expiresAt as string) : null)
     : undefined;
   const upstreamApiKey = body.upstreamApiKey as string | undefined;
+
+  const permissionsError = checkPermissions(permissions);
+  if (permissionsError) {
+    return c.json({ error: permissionsError }, 400);
+  }
 
   // Only dedicated keys bind to a provider; re-binding changes the upstream
   // baseUrl. Reject other modes and validate the target provider exists.

@@ -165,7 +165,7 @@ export const QUERYABLE_TABLES: readonly TableMeta[] = [
       { name: 'provider_id', kind: 'bigint', desc: '绑定服务商 id（dedicated 模式），可空' },
       { name: 'upstream_api_key_enc', kind: 'text', sensitive: true, desc: '上游 key（明文存储，禁查）' },
       { name: 'name', kind: 'string', desc: '密钥名称' },
-      { name: 'permissions', kind: 'json', desc: '权限配置，可空' },
+      { name: 'permissions', kind: 'json', desc: '权限配置（含 modelPolicy：按 key 的可用模型名单与按模型日/月 token 配额），可空' },
       {
         name: 'status',
         kind: 'enum',
