@@ -51,6 +51,8 @@ export default function ApiKeysPage() {
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [filterMode, setFilterMode] = useState<'user' | 'app' | 'admin' | 'dedicated' | null>(null);
+  const [filterStatus, setFilterStatus] = useState<'active' | 'revoked' | 'expired' | 'quota_exceeded' | null>(null);
 
   // Create dialog
   const [showCreate, setShowCreate] = useState(false);
@@ -91,7 +93,13 @@ export default function ApiKeysPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await listApiKeys({ page, pageSize: 20, search: debouncedSearch || undefined });
+      const res = await listApiKeys({
+        page,
+        pageSize: 20,
+        search: debouncedSearch || undefined,
+        mode: filterMode ?? undefined,
+        status: filterStatus ?? undefined,
+      });
       setKeys(res.data);
       setTotal(res.total);
       setError(null);
@@ -100,7 +108,7 @@ export default function ApiKeysPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, debouncedSearch]);
+  }, [page, debouncedSearch, filterMode, filterStatus]);
 
   // Debounce the search box; reset to page 1 so the new query shows results from the top.
   useEffect(() => {
@@ -460,14 +468,46 @@ export default function ApiKeysPage() {
           </div>
         )}
 
-        <div className="relative max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="搜索名称或密钥前缀..."
-            className="pl-9"
-          />
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative max-w-sm flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="搜索名称或密钥前缀..."
+              className="pl-9"
+            />
+          </div>
+          <Select
+            value={filterMode ?? 'all'}
+            onValueChange={(v) => { setFilterMode(v === 'all' ? null : v as 'user' | 'app' | 'admin' | 'dedicated'); setPage(1); }}
+          >
+            <SelectTrigger className="w-[150px]">
+              <SelectValue placeholder="全部类型" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部类型</SelectItem>
+              <SelectItem value="user">User</SelectItem>
+              <SelectItem value="app">App</SelectItem>
+              <SelectItem value="admin">Admin</SelectItem>
+              <SelectItem value="dedicated">一对一转发</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={filterStatus ?? 'all'}
+            onValueChange={(v) => { setFilterStatus(v === 'all' ? null : v as 'active' | 'revoked' | 'expired' | 'quota_exceeded'); setPage(1); }}
+          >
+            <SelectTrigger className="w-[150px]">
+              <SelectValue placeholder="全部状态" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="active">激活</SelectItem>
+              <SelectItem value="revoked">已撤销</SelectItem>
+              <SelectItem value="expired">已过期</SelectItem>
+              <SelectItem value="quota_exceeded">配额超限</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <DataTable

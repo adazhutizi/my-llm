@@ -44,7 +44,7 @@ adminApiKeys.get('/', async (c) => {
   const userId = c.req.query('userId') ? Number(c.req.query('userId')) : undefined;
   const groupId = c.req.query('groupId') ? Number(c.req.query('groupId')) : undefined;
   const appId = c.req.query('appId') ? Number(c.req.query('appId')) : undefined;
-  const status = c.req.query('status') as 'active' | 'revoked' | 'expired' | undefined;
+  const status = c.req.query('status') as 'active' | 'revoked' | 'expired' | 'quota_exceeded' | undefined;
   const search = c.req.query('search')?.trim() || undefined;
 
   const result = await listApiKeys(

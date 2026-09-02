@@ -231,7 +231,16 @@ export async function getUsageTrend(params: { period?: string; from?: string; to
 
 // ── API Keys ──────────────────────────────────────────────────────────────
 
-export function listApiKeys(params?: { page?: number; pageSize?: number; search?: string; userId?: number; groupId?: number }): Promise<PaginatedResponse<ApiKey>> {
+export function listApiKeys(params?: {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  mode?: 'user' | 'app' | 'admin' | 'dedicated';
+  status?: 'active' | 'revoked' | 'expired' | 'quota_exceeded';
+  userId?: number;
+  groupId?: number;
+  appId?: number;
+}): Promise<PaginatedResponse<ApiKey>> {
   const qs = new URLSearchParams(
     Object.fromEntries(
       Object.entries(params || {}).filter(([, v]) => v != null).map(([k, v]) => [k, String(v)]),

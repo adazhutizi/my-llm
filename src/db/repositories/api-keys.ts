@@ -9,7 +9,7 @@ export interface ListApiKeysFilters {
   userId?: number;
   groupId?: number;
   appId?: number;
-  status?: 'active' | 'revoked' | 'expired';
+  status?: 'active' | 'revoked' | 'expired' | 'quota_exceeded';
   search?: string;
 }
 
