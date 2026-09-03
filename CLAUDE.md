@@ -12,7 +12,7 @@ pnpm(v11+) workspace:后端 + 前端(`web/`)。
 
 **后端**(Hono + Drizzle + MySQL):
 ```bash
-pnpm dev                                          # tsx watch,:3000
+pnpm dev                                          # tsx watch --env-file=.env,:3000
 node --env-file=.env --import tsx src/index.ts    # 直接启动
 pnpm build                                        # tsup → dist/
 pnpm test                                         # vitest watch
@@ -179,6 +179,7 @@ pnpm --filter llm-gateway-dashboard lint
 
 ### 管理后台(前端 `web/`)
 Next.js 16(App Router)+React 19,静态导出由 Hono 在 `/dashboard/*` 托管。shadcn/ui + Tailwind,全中文(zh-CN)。
+- **Next.js 16 与训练数据可能不一致**(见 `web/AGENTS.md`,由 `next dev` 自动维护):在 `web/` 写涉及 Next 特有 API(路由/数据获取/构建配置)的代码前,先查 `node_modules/next/dist/docs/` 对应指南;纯客户端 React 组件与既有静态导出模式不受影响。
 - **静态导出仅生产生效**(`web/next.config.ts`):`output:'export'`+`distDir:'out'` 包在 `NODE_ENV==='production'` 条件里;dev 不设(否则跳过 `rewrites()`,`/admin/*`、`/health` 无法代理)。`basePath:'/dashboard'`(401 整页跳转用绝对路径 `/dashboard/login`)。
 - **dev/prod baseURL 切换**:`window.location.port==='3001'` 判定。`api.ts`/`auth.tsx`/`getSystemInfo` 各有一份。
 - **`fetchJSON` 三层封装+两信封**(`web/src/lib/api.ts`):子路由 `{data:T}`/`{data:T[],pagination,summary?}`→`fetchUnwrap`/`fetchPaginated`;配额路由(挂 `/admin` 根)返**无信封** `{success,...}`→`fetchJSON`。统一塞 JWT、拾 `X-Renewed-Token`、401 清 localStorage 跳登录。
@@ -186,6 +187,7 @@ Next.js 16(App Router)+React 19,静态导出由 Hono 在 `/dashboard/*` 托管�
 - **坑:静态导出 + `useSearchParams` 必须包 `<Suspense>`**(Next 16 硬约束):读 URL 预设筛选的页面(如 `/logs?userId=`)默认导出需 `<Suspense>` 包裹内容组件。
 - **跨页「日志」跳转 = URL 预设筛选约定**:`router.push('/logs?<field>=<value>')`——`/users`→`userId`、`/apps`→`appId`、`/models`→`model`(虚拟模型 ID)、`/providers`→`provider`(服务商 name)、`/app-users-usage`→`appUserId`、`/feature-usage`→`featureId`。后端 `listRequestLogs` 支持上述+`statusCode`/`requestPath`/`userAgent`/`groupId`/`date` 过滤;`requestPath`/`userAgent` 走 `LIKE '%...%'`(**值须 `likePattern()` 转义 `%`/`_`/`\`**)。Select 过滤框 URL 预设值可能不在选项里——渲染时并入。
 - **`DataTable`**(`web/src/components/data-table.tsx`)9 个列表页复用:`compact`/`keyExtractor` 非破坏扩展(不传时 undefined),改它务必向后兼容。**合并箭头**(`logs-merge-arrows.tsx`):`/logs` 对已归并行,`mergedInto` 目标同页画弧线(同链同色、并查集);详情「查看完整记录」顺 `mergedInto` 链跳尾部。
+- **请求日志页过滤器双渲染**(`logs/page.tsx` + `components/logs-filter-form.tsx`):14 维过滤表单抽成受控组件 `LogsFilterForm`,**同份表单渲染两处**——页面顶部原位 + 滚动后固定条展开态——state 全由页面持有,两处永不漂移;改过滤字段只改组件一处。原位过滤器滚出视口(`IntersectionObserver` 判 `boundingClientRect.top<0`,排除滚到页底的情形)后列表上方弹 `sticky top-0` 折叠条(生效条件摘要 chips+一键展开,点「筛选」后自动收起)。**z-index 约束**:折叠条 z-20 必须低于移动端 sidebar 遮罩 z-30/侧栏 z-40(同层级会因 DOM 顺序反盖遮罩),表单内 Radix 弹层 z-50 不受影响。滚动容器是 AppLayout `<main>`(`overflow-y-auto`),sticky 恰贴页头下方。
 
 ## 关键约定
 - **ESM 模块**:`"type":"module"`,所有 import 路径带 `.js`(即使源是 `.ts`)。tsup 单文件 ESM。

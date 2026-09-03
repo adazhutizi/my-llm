@@ -1,22 +1,19 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { AppLayout } from '@/components/layout';
 import { DataTable } from '@/components/data-table';
 import { MergeArrowsOverlay } from '@/components/logs-merge-arrows';
+import { LogsFilterForm, LogsFilterState } from '@/components/logs-filter-form';
 import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { listLogs, getLogDetail, getLogFilterOptions, listUsers, listApiKeys, listApps, listUserGroups, archiveLogs, generateLogSummary } from '@/lib/api';
 import { RequestLog, RequestDetail, User, ApiKey, App, UserGroup, ApiError, LogSummaryMeta } from '@/lib/types';
-import { Loader2, Search, Archive } from 'lucide-react';
-import { cn, formatDateTime, beijingTodayStart, toBeijingDateTimeLocal } from '@/lib/utils';
-import { InlineCombobox } from '@/components/inline-combobox';
+import { Loader2, Filter, ChevronDown, ChevronUp } from 'lucide-react';
+import { formatDateTime, beijingTodayStart, toBeijingDateTimeLocal } from '@/lib/utils';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -48,7 +45,7 @@ function LogsPageContent() {
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = useState<LogsFilterState>({
     model: searchParams.get('model') ?? '',
     provider: searchParams.get('provider') ?? '',
     statusCode: '',
@@ -85,6 +82,52 @@ function LogsPageContent() {
   const [archiving, setArchiving] = useState(false);
   const [archiveMsg, setArchiveMsg] = useState<{ text: string; kind: 'success' | 'error' } | null>(null);
   const [includeToday, setIncludeToday] = useState(false);
+
+  // —— 滚动固定过滤器（sticky 折叠条）——
+  // 浏览下方日志时过滤器滚出视口，回顶改条件太慢：过滤器滚出后，在列表上方
+  // 显示一条 sticky 折叠条（当前条件摘要 + 展开完整过滤器）。IO 观察原过滤器
+  // 区，`top < 0 && !isIntersecting` = 已向上滚出视口（滚到页面底部以下时
+  // top > 0，不弹条）。滚动容器是 AppLayout 的 <main>（overflow-y-auto），
+  // sticky top-0 恰好贴在页头下方。
+  const filterSectionRef = useRef<HTMLDivElement>(null);
+  const [filterStuck, setFilterStuck] = useState(false);
+  const [stickyExpanded, setStickyExpanded] = useState(false);
+
+  useEffect(() => {
+    const el = filterSectionRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      ([entry]) => setFilterStuck(!entry.isIntersecting && entry.boundingClientRect.top < 0),
+      { threshold: 0 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+
+  // 滚回顶部、折叠条消失时重置展开态，下次弹出仍是折叠摘要。
+  useEffect(() => {
+    if (!filterStuck) setStickyExpanded(false);
+  }, [filterStuck]);
+
+  // 折叠条上的条件摘要（时间 + 各维度 chips），实体类维度解析成名称显示。
+  const filterChips = useMemo(() => {
+    const chips: string[] = [];
+    const fmtDT = (v: string) => (v ? v.replace('T', ' ').slice(5, 16) : '');
+    if (dateFrom || dateTo) chips.push(`${fmtDT(dateFrom) || '…'} ~ ${fmtDT(dateTo) || '…'}`);
+    if (filters.model) chips.push(`模型：${filters.model}`);
+    if (filters.provider) chips.push(`服务商：${filters.provider}`);
+    if (filters.groupId) chips.push(`分组：${groups.find((g) => String(g.id) === filters.groupId)?.name ?? `#${filters.groupId}`}`);
+    if (filters.userId) chips.push(`用户：${users.find((u) => String(u.id) === filters.userId)?.username ?? `#${filters.userId}`}`);
+    if (filters.apiKeyId) chips.push(`密钥：${apiKeys.find((k) => String(k.id) === filters.apiKeyId)?.name ?? `#${filters.apiKeyId}`}`);
+    if (filters.appId) chips.push(`应用：${apps.find((a) => String(a.id) === filters.appId)?.name ?? `#${filters.appId}`}`);
+    if (filters.statusCode) chips.push(`状态：${filters.statusCode}`);
+    if (filters.requestPath) chips.push(`路径：${filters.requestPath}`);
+    if (filters.userAgent) chips.push(`UA：${filters.userAgent}`);
+    if (filters.appUserId) chips.push(`用户标识：${filters.appUserId}`);
+    if (filters.featureId) chips.push(`功能：${filters.featureId}`);
+    if (filters.hideArchived) chips.push('仅未归并');
+    return chips;
+  }, [filters, dateFrom, dateTo, groups, users, apiKeys, apps]);
 
   useEffect(() => {
     getLogFilterOptions().then(setFilterOptions).catch(() => {});
@@ -364,165 +407,95 @@ function LogsPageContent() {
 
   return (
     <div className="space-y-4">
-            <div className="flex flex-wrap gap-4 items-end">
-              <div>
-                <Label>开始时间</Label>
-                <Input type="datetime-local" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-              </div>
-              <div>
-                <Label>结束时间</Label>
-                <Input type="datetime-local" value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-              </div>
-              <div>
-                <Label>服务商</Label>
-                <Select value={filters.provider || '__all__'} onValueChange={(v) => setFilters({ ...filters, provider: v === '__all__' ? '' : v })}>
-                  <SelectTrigger className={cn('w-[180px]', !filters.provider && 'text-muted-foreground')}><SelectValue placeholder="全部" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__all__">全部</SelectItem>
-                    {Array.from(new Set([filters.provider, ...filterOptions.providers])).filter(Boolean).map((p) => (
-                      <SelectItem key={p} value={p}>{p}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>模型</Label>
-                <Select value={filters.model || '__all__'} onValueChange={(v) => setFilters({ ...filters, model: v === '__all__' ? '' : v })}>
-                  <SelectTrigger className={cn('w-[180px]', !filters.model && 'text-muted-foreground')}><SelectValue placeholder="全部" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__all__">全部</SelectItem>
-                    {Array.from(new Set([filters.model, ...filterOptions.models])).filter(Boolean).map((m) => (
-                      <SelectItem key={m} value={m}>{m}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>分组</Label>
-                <Select
-                  value={filters.groupId || '__all__'}
-                  onValueChange={(v) => setFilters((prev) => ({ ...prev, groupId: v === '__all__' ? '' : v, userId: '', apiKeyId: '' }))}
-                >
-                  <SelectTrigger className={cn('w-[180px]', !filters.groupId && 'text-muted-foreground')}><SelectValue placeholder="全部分组" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__all__">全部分组</SelectItem>
-                    {groups.map((g) => (
-                      <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="w-[200px]">
-                <Label>用户</Label>
-                <InlineCombobox
-                  options={users.map((u) => ({ value: String(u.id), label: u.username, suffix: u.identifier || `#${u.id}` }))}
-                  value={filters.userId}
-                  onChange={(v) => setFilters({ ...filters, userId: v, apiKeyId: '' })}
-                  placeholder="全部用户"
-                  searchPlaceholder="搜索用户名..."
-                  emptyText="未找到用户"
-                  allowClear
-                  clearLabel="全部用户"
-                />
-              </div>
-              <div className="w-[220px]">
-                <Label>API 密钥</Label>
-                <InlineCombobox
-                  options={apiKeys.map((k) => ({ value: String(k.id), label: k.name, suffix: k.keyPrefix }))}
-                  value={filters.apiKeyId}
-                  onChange={(v) => setFilters({ ...filters, apiKeyId: v })}
-                  placeholder="全部密钥"
-                  searchPlaceholder="搜索密钥名..."
-                  emptyText="未找到密钥"
-                  allowClear
-                  clearLabel="全部密钥"
-                />
-              </div>
-              <div className="w-[200px]">
-                <Label>应用</Label>
-                <InlineCombobox
-                  options={apps.map((a) => ({ value: String(a.id), label: a.name }))}
-                  value={filters.appId}
-                  onChange={(v) => setFilters({ ...filters, appId: v })}
-                  placeholder="全部应用"
-                  searchPlaceholder="搜索应用名..."
-                  emptyText="未找到应用"
-                  allowClear
-                  clearLabel="全部应用"
-                />
-              </div>
-              <div className="w-[220px]">
-                <Label>请求路径</Label>
-                <Input
-                  placeholder="/v1/chat/completions"
-                  value={filters.requestPath}
-                  onChange={(e) => setFilters({ ...filters, requestPath: e.target.value })}
-                />
-              </div>
-              <div className="w-[220px]">
-                <Label>UA</Label>
-                <Input
-                  placeholder="curl/8"
-                  value={filters.userAgent}
-                  onChange={(e) => setFilters({ ...filters, userAgent: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label>状态码</Label>
-                <Input
-                  placeholder="200"
-                  className="w-24"
-                  value={filters.statusCode}
-                  onChange={(e) => setFilters({ ...filters, statusCode: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label>用户标识</Label>
-                <Input
-                  placeholder="user-123"
-                  value={filters.appUserId}
-                  onChange={(e) => setFilters({ ...filters, appUserId: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label>功能标识</Label>
-                <Input
-                  placeholder="chat"
-                  value={filters.featureId}
-                  onChange={(e) => setFilters({ ...filters, featureId: e.target.value })}
-                />
-              </div>
-              <div>
-                <Label htmlFor="hideArchived">归并</Label>
-                <div className="flex items-center h-9">
-                  <input
-                    id="hideArchived"
-                    type="checkbox"
-                    checked={filters.hideArchived}
-                    onChange={(e) => {
-                      setFilters({ ...filters, hideArchived: e.target.checked });
-                      setPage(1);
-                    }}
-                    className="h-4 w-4 cursor-pointer"
-                  />
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button onClick={handleFilter}>
-                  <Search className="h-4 w-4 mr-2" />
-                  筛选
-                </Button>
-                <Button variant="destructive" onClick={() => setConfirmOpen(true)}>
-                  <Archive className="h-4 w-4 mr-2" />
-                  归并
-                </Button>
-              </div>
-            </div>
+        <div ref={filterSectionRef}>
+          <LogsFilterForm
+            filters={filters}
+            onFiltersChange={setFilters}
+            dateFrom={dateFrom}
+            dateTo={dateTo}
+            onDateFromChange={setDateFrom}
+            onDateToChange={setDateTo}
+            filterOptions={filterOptions}
+            users={users}
+            apiKeys={apiKeys}
+            apps={apps}
+            groups={groups}
+            onFilter={handleFilter}
+            onArchive={() => setConfirmOpen(true)}
+            onHideArchivedChange={() => setPage(1)}
+          />
+        </div>
             {archiveMsg && (
               <div className={`text-sm ${archiveMsg.kind === 'success' ? 'text-green-600' : 'text-red-600'}`}>
                 {archiveMsg.text}
               </div>
             )}
+        {filterStuck && (
+          // z-20：盖住表格滚动内容，同时低于移动端 sidebar 遮罩（z-30）/侧栏
+          //（z-40）；表单内 Radix 弹层（z-50）仍在最上，下拉正常弹出。
+          <div className="sticky top-0 z-20 rounded-lg border bg-background/95 p-2 shadow-md backdrop-blur">
+            {stickyExpanded ? (
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    <Filter className="h-4 w-4 text-muted-foreground" />
+                    过滤条件
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => setStickyExpanded(false)}>
+                    <ChevronUp className="h-4 w-4" />
+                    收起
+                  </Button>
+                </div>
+                <div className="max-h-[55vh] overflow-y-auto pr-1">
+                  <LogsFilterForm
+                    filters={filters}
+                    onFiltersChange={setFilters}
+                    dateFrom={dateFrom}
+                    dateTo={dateTo}
+                    onDateFromChange={setDateFrom}
+                    onDateToChange={setDateTo}
+                    filterOptions={filterOptions}
+                    users={users}
+                    apiKeys={apiKeys}
+                    apps={apps}
+                    groups={groups}
+                    onFilter={() => {
+                      // 应用后收起，让出视野直接看过滤结果。
+                      handleFilter();
+                      setStickyExpanded(false);
+                    }}
+                    onArchive={() => setConfirmOpen(true)}
+                    onHideArchivedChange={() => setPage(1)}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Filter className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+                  {filterChips.length === 0 ? (
+                    <span className="text-sm text-muted-foreground">未设置过滤条件</span>
+                  ) : (
+                    <>
+                      {filterChips.slice(0, 5).map((chip) => (
+                        <Badge key={chip} variant="secondary" className="max-w-[260px] truncate font-normal">
+                          {chip}
+                        </Badge>
+                      ))}
+                      {filterChips.length > 5 && (
+                        <Badge variant="outline">+{filterChips.length - 5}</Badge>
+                      )}
+                    </>
+                  )}
+                </div>
+                <Button size="sm" variant="outline" className="shrink-0" onClick={() => setStickyExpanded(true)}>
+                  展开过滤器
+                  <ChevronDown className="ml-1 h-4 w-4" />
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
         <MergeArrowsOverlay logs={logs}>
           <DataTable
             columns={columns}
