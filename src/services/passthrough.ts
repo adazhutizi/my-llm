@@ -212,6 +212,14 @@ export async function passthroughUpstream(
   // 字节转发错误 SSE,客户端 SDK 收到 200+SSE 开始解析却只读到错误 → 卡住(与 Internal
   // 跨族「先开流再判 429」同类坑,见「Provider 适配器」)。先看 ok 再看 content-type。
   if (upstreamRes.ok && contentType.includes('text/event-stream')) {
+    // 透传上游 content-type 原值(含 `text/event-stream;charset=UTF-8` 等 charset 变体):
+    // stream() 裸调 c.newResponse 不带任何头,不设则客户端收到无 content-type 的 200 流,
+    // 严格按 MIME 判定 SSE 的消费方(浏览器 EventSource、部分 SDK/中间代理)会拒绝。
+    // 刻意只透传这一个头,其余上游头不透传:content-encoding 已被 fetch 自动解压
+    // (透传则客户端对明文再解压)、content-length 与转发字节不保证一致、上游
+    // x-request-id 会与网关回显的 X-Request-ID 双 id 混淆。
+    c.header('Content-Type', contentType);
+
     const responseHeaders: Record<string, string> = {};
     for (const [k, v] of upstreamRes.headers.entries()) responseHeaders[k] = v;
 

@@ -382,6 +382,12 @@ dedicated 透传转发时保留客户端请求头的原始格式（含字段名�
 
 同协议族透传（OpenAI→OpenAI、Anthropic→Anthropic 的兼容接口）的请求头按相同规则处理。
 
+### 响应头
+
+- **非流式响应**：透传上游全部响应头（仅剥 `Transfer-Encoding` / `Content-Encoding`，后者已在网关侧解压，透传会导致客户端对明文重复解压）。
+- **流式（SSE）响应**：透传上游 `Content-Type` 原值（如 `text/event-stream; charset=utf-8`）——浏览器 `EventSource`、部分 SDK 与中间代理严格按该 MIME 判定 SSE，缺失会被拒。上游其余响应头不透传（`Content-Encoding` 同上、`Content-Length` 与实际转发字节不保证一致、上游 `x-request-id` 会与网关回显的 `X-Request-ID` 混淆）。
+- 所有响应（含兼容接口）均回显 `X-Request-ID`（见下文「请求 ID」），供客户端与请求日志对账。
+
 ### Token 记账
 
 dedicated 透传同样会记录每次请求的 token 用量（用于配额扣减与用量统计），优先采用上游返回的真实 `usage`。**上游未返回 usage 时默认记 0、不再估算**；若需对这种情况兜底，可在管理后台「服务商」编辑页为该服务商勾选「启用 Token 估算回退」——开启后仅对**生成类接口**（Chat Completions、Messages、Responses）按请求/响应体字符数粗估。此开关默认关闭，且对 OpenAI/Anthropic 兼容接口与一对一透传三条链路统一生效（即上文各类 chat 接口的用量统计也受同一开关控制）。**非生成类接口**（`count_tokens`、Images、Embeddings、Models 等）无论开关如何都不参与估算，只取上游真实值、无则记 0。

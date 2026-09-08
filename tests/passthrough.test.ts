@@ -206,6 +206,9 @@ describe('passthroughUpstream (同族透传旁路)', () => {
     });
 
     expect(res.status).toBe(200);
+    // 流式响应透传上游 content-type(stream() 默认不带任何头,不设则客户端收到
+    // 无 content-type 的 200 流,EventSource 等严格消费方会拒绝)
+    expect(res.headers.get('content-type')).toBe('text/event-stream');
     const text = await res.text();
     // 字节原样转发(含 [DONE])
     expect(text).toContain('Hello');
@@ -350,6 +353,52 @@ describe('passthroughUpstream (同族透传旁路)', () => {
     expect(trackedUsage.completionTokens).toBe(6);
     // prompt 从 requestBody 估算(递归累加所有字符串长度)> 0
     expect(trackedUsage.promptTokens).toBeGreaterThan(0);
+  });
+
+  it('流式响应 content-type 透传上游原值(charset 变体),其余上游头不透传', async () => {
+    // 回归:stream() 裸调 c.newResponse 不带任何头,流式响应曾完全没有 content-type
+    // (上游的 text/event-stream 只进了日志的 responseHeaders,没到客户端)。严格按
+    // MIME 判定 SSE 的消费方(浏览器 EventSource、部分 SDK/代理)会拒绝。修复:单透传
+    // 上游 content-type 原值——charset 变体(`;charset=UTF-8`,无空格)原样保留。
+    // 其余上游头刻意不透传:content-encoding 已被 fetch 自动解压(透传则客户端对明文
+    // 再解压)、content-length 与转发字节不保证一致、上游 x-request-id 与网关回显的
+    // X-Request-ID 双 id 混淆。
+    const sseBody = 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: [DONE]\n\n';
+    fetchMock.mockResolvedValue(
+      new Response(sseBody, {
+        status: 200,
+        headers: {
+          'content-type': 'text/event-stream;charset=UTF-8',
+          'content-encoding': 'gzip',
+          'x-request-id': 'upstream-req-999',
+        },
+      }),
+    );
+
+    const app = buildApp({
+      providerCfg: { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-real', apiType: 'openai', estimateFallback: false },
+      realModel: 'gpt-4o',
+      clientProtocol: 'cc',
+      requestBody: { model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }], stream: true },
+      providerName: 'openai',
+    });
+
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: 'hi' }], stream: true }),
+    });
+    await res.text();
+
+    // 上游原值原样透传(含无空格 charset 变体)
+    expect(res.headers.get('content-type')).toBe('text/event-stream;charset=UTF-8');
+    // 其余上游头不透传
+    expect(res.headers.get('content-encoding')).toBeNull();
+    expect(res.headers.get('x-request-id')).toBeNull();
+    // 日志侧仍记录完整上游头(与客户端可见头是两回事)
+    const logOpts = mockedPersistRequestLog.mock.calls[0][5] as any;
+    expect(logOpts.responseHeaders['content-type']).toBe('text/event-stream;charset=UTF-8');
+    expect(logOpts.responseHeaders['x-request-id']).toBe('upstream-req-999');
   });
 
   it('流式 SSE 行解析容错:无空格 data: + 中间畸形行不阻断终态 usage 提取', async () => {
