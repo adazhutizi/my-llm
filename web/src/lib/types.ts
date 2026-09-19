@@ -306,6 +306,21 @@ export interface RateLimitConfig {
   monthlyTokens: number | null;
 }
 
+// ── UA (User-Agent) allow/block lists ─────────────────────────────────────
+// One row per target in ua_policies. Levels stack: a block hit at any level
+// denies; a configured allow level requires a match. 'unset' (no row) is
+// represented client-side by the dialog's __unset__ sentinel, not here.
+
+export interface UaPolicy {
+  id: number;
+  targetType: 'global' | 'app' | 'user' | 'api_key';
+  targetId: number | null;
+  mode: 'block' | 'allow';
+  patterns: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface LogRetentionConfig {
   detailsRetentionDays: number;
   logsRetentionDays: number;

@@ -5,6 +5,7 @@ export enum GatewayErrorCode {
   QUOTA_EXCEEDED = 'quota_exceeded',
   MODEL_NOT_FOUND = 'model_not_found',
   MODEL_NOT_ALLOWED = 'model_not_allowed',
+  UA_NOT_ALLOWED = 'user_agent_not_allowed',
   PROVIDER_ERROR = 'provider_error',
   UPSTREAM_TIMEOUT = 'upstream_timeout',
   INVALID_REQUEST = 'invalid_request',
@@ -47,6 +48,7 @@ export function formatAnthropicError(error: GatewayError): object {
     [GatewayErrorCode.RATE_LIMITED]: 'rate_limit_error',
     [GatewayErrorCode.AUTH_FAILED]: 'authentication_error',
     [GatewayErrorCode.MODEL_NOT_ALLOWED]: 'permission_error',
+    [GatewayErrorCode.UA_NOT_ALLOWED]: 'permission_error',
     [GatewayErrorCode.INVALID_REQUEST]: 'invalid_request_error',
     [GatewayErrorCode.PROVIDER_ERROR]: 'api_error',
     [GatewayErrorCode.INTERNAL_ERROR]: 'api_error',
@@ -92,6 +94,21 @@ export const Errors = {
       `Model not allowed for this API key: ${model}`,
       403,
     ),
+
+  uaNotAllowed: (
+    level: string,
+    mode: string,
+    pattern?: string,
+    uaPreview?: string,
+  ) => {
+    let msg = `User-Agent not allowed by ${level}-level ${mode === 'allow' ? 'allow' : 'block'} (UA) policy`;
+    // The 403 is NOT persisted to request_logs (entry-layer rejection), so the
+    // error message + pino warn are the only troubleshooting clues — include
+    // the matched pattern and a truncated UA preview.
+    if (mode === 'block' && pattern) msg += ` (matched pattern: ${pattern})`;
+    if (uaPreview) msg += ` (user-agent: ${uaPreview})`;
+    return new GatewayError(GatewayErrorCode.UA_NOT_ALLOWED, msg, 403);
+  },
 
   providerError: (msg: string) =>
     new GatewayError(GatewayErrorCode.PROVIDER_ERROR, msg, 502),

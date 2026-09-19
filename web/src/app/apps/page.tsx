@@ -36,9 +36,10 @@ import {
 } from '@/components/ui/table';
 import { listApps, createApp, getAppUsers, updateApp, deleteApp, restoreTarget } from '@/lib/api';
 import type { App, AppUser } from '@/lib/types';
-import { Loader2, Settings2, Search, ScrollText, PieChart } from 'lucide-react';
+import { Loader2, Settings2, Search, ScrollText, PieChart, ShieldBan } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { QuotaConfigDialog } from '@/components/quota-config-dialog';
+import { UaPolicyDialog } from '@/components/ua-policy-dialog';
 import { QuotaIndicator } from '@/components/quota-indicator';
 import { formatDate } from '@/lib/utils';
 
@@ -67,6 +68,9 @@ export default function AppsPage() {
 
   // Quota config
   const [quotaTarget, setQuotaTarget] = useState<App | null>(null);
+
+  // UA allow/block list
+  const [uaTarget, setUaTarget] = useState<App | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -198,6 +202,14 @@ export default function AppsPage() {
           >
             <Settings2 className="mr-1 h-4 w-4" />
             配额
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={(e) => { e.stopPropagation(); setUaTarget(a); }}
+          >
+            <ShieldBan className="mr-1 h-4 w-4" />
+            UA 名单
           </Button>
           <Button
             variant="ghost"
@@ -412,6 +424,17 @@ export default function AppsPage() {
             type="app"
             id={quotaTarget.id}
             label={`应用: ${quotaTarget.name}`}
+          />
+        )}
+
+        {/* UA allow/block list */}
+        {uaTarget && (
+          <UaPolicyDialog
+            open={!!uaTarget}
+            onOpenChange={(open) => { if (!open) setUaTarget(null); }}
+            type="app"
+            id={uaTarget.id}
+            label={`应用: ${uaTarget.name}`}
           />
         )}
       </div>

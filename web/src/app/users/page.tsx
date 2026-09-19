@@ -42,9 +42,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { listUsers, createUser, updateUser, deleteUser, restoreTarget, listUserGroups } from '@/lib/api';
 import type { User, UserGroup } from '@/lib/types';
-import { Loader2, Settings2, ScrollText, PieChart, Search, Layers } from 'lucide-react';
+import { Loader2, Settings2, ScrollText, PieChart, Search, Layers, ShieldBan } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { QuotaConfigDialog } from '@/components/quota-config-dialog';
+import { UaPolicyDialog } from '@/components/ua-policy-dialog';
 import { QuotaIndicator } from '@/components/quota-indicator';
 import { UserGroupManagerDialog } from '@/components/user-group-manager-dialog';
 import { formatDate } from '@/lib/utils';
@@ -80,6 +81,9 @@ export default function UsersPage() {
 
   // Quota config
   const [quotaTarget, setQuotaTarget] = useState<User | null>(null);
+
+  // UA allow/block list
+  const [uaTarget, setUaTarget] = useState<User | null>(null);
 
   const loadGroups = useCallback(async () => {
     try {
@@ -288,6 +292,14 @@ export default function UsersPage() {
           <Button
             variant="ghost"
             size="sm"
+            onClick={(e) => { e.stopPropagation(); setUaTarget(u); }}
+          >
+            <ShieldBan className="mr-1 h-4 w-4" />
+            UA 名单
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={(e) => { e.stopPropagation(); router.push(`/reports?userId=${u.id}`); }}
           >
             <PieChart className="mr-1 h-4 w-4" />
@@ -461,6 +473,17 @@ export default function UsersPage() {
             type="user"
             id={quotaTarget.id}
             label={`用户: ${quotaTarget.username}`}
+          />
+        )}
+
+        {/* UA allow/block list */}
+        {uaTarget && (
+          <UaPolicyDialog
+            open={!!uaTarget}
+            onOpenChange={(open) => { if (!open) setUaTarget(null); }}
+            type="user"
+            id={uaTarget.id}
+            label={`用户: ${uaTarget.username}`}
           />
         )}
 

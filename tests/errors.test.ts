@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   Errors,
-  GatewayError,
-  GatewayErrorCode,
   formatOpenAIError,
   formatAnthropicError,
   formatErrorForPath,
@@ -25,6 +23,23 @@ describe('Errors', () => {
     const error = Errors.modelNotFound('gpt-5');
     expect(error.statusCode).toBe(404);
     expect(error.message).toContain('gpt-5');
+  });
+
+  it('should create UA not allowed error with level/mode/pattern/UA preview', () => {
+    const error = Errors.uaNotAllowed('global', 'block', '^curl', 'curl/8.0.1');
+    expect(error.statusCode).toBe(403);
+    expect(error.code).toBe('user_agent_not_allowed');
+    expect(error.message).toContain('global');
+    expect(error.message).toContain('^curl');
+    expect(error.message).toContain('curl/8.0.1');
+  });
+
+  it('should format UA not allowed as permission_error on the Anthropic protocol', () => {
+    const error = Errors.uaNotAllowed('api_key', 'allow');
+    const formatted = formatAnthropicError(error);
+    expect((formatted as any).error.type).toBe('permission_error');
+    const openai = formatOpenAIError(error);
+    expect((openai as any).error.code).toBe('user_agent_not_allowed');
   });
 
   it('should format OpenAI error', () => {

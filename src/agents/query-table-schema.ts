@@ -7,7 +7,7 @@
 //   4. the `*` default expansion (every column minus sensitive/heavy).
 //
 // The per-column `desc` is ALSO the single source of truth for DB COLUMN
-// COMMENTs: src/db/column-comments.ts derives from here (13 queryable tables,
+// COMMENTs: src/db/column-comments.ts derives from here (14 queryable tables,
 // + hand-maintained admin_users), scripts/apply-comments.ts injects those as
 // MySQL COMMENTs, and scripts/check-schema-sync.ts (run by `pnpm db:gen`)
 // guards the column list here against drift from src/db/schema.ts.
@@ -192,6 +192,19 @@ export const QUERYABLE_TABLES: readonly TableMeta[] = [
     ],
   },
   {
+    name: 'ua_policies',
+    desc: 'User-Agent 黑白名单规则（按 target_type + target_id 配置；block=命中正则即拒绝，allow=必须命中；四级叠加判定）',
+    columns: [
+      { name: 'id', kind: 'bigint', desc: '行 id' },
+      { name: 'target_type', kind: 'enum', enumValues: ['global', 'app', 'user', 'api_key'], desc: '名单对象类型' },
+      { name: 'target_id', kind: 'bigint', desc: '对象 id（global 时为空）' },
+      { name: 'mode', kind: 'enum', enumValues: ['block', 'allow'], desc: '名单模式（block=黑名单，allow=白名单）' },
+      { name: 'patterns', kind: 'json', desc: '正则表达式字符串数组（匹配 User-Agent，不区分大小写）' },
+      { name: 'created_at', kind: 'datetime', desc: '创建时间' },
+      { name: 'updated_at', kind: 'datetime', desc: '更新时间' },
+    ],
+  },
+  {
     name: 'users',
     desc: '网关用户',
     columns: [
@@ -318,9 +331,11 @@ export function buildQueryTableDescription(): string {
 // so legal JOINs must be declared here. This list IS the boundary that prevents
 // arbitrary cross joins — without it the model could mint cartesian products or
 // nonsense pairings. Each relation is symmetric: findJoinRelation() matches
-// both directions. Polymorphic rate_limits rows carry `polymorphic`; the
-// target_type column always lives on the rate_limits side, and its value comes
-// from THIS constant (never from model input) and is emitted as a bound param.
+// both directions. Polymorphic rows (rate_limits, ua_policies — tables whose
+// target_id points at different tables depending on a target_type column)
+// carry `polymorphic`; by convention the POLYMORPHIC TABLE IS ALWAYS SIDE `a`
+// (the typeColumn lives there), and the typeValue comes from THIS constant
+// (never from model input) and is emitted as a bound param.
 // Relations needing composite keys (request_logs.feature_id → features) or
 // self-joins (request_details.merged_into) are deliberately omitted.
 export interface JoinRelation {
@@ -358,45 +373,44 @@ export const JOIN_RELATIONS: readonly JoinRelation[] = [
   { a: 'rate_limits', aCol: 'target_id', b: 'api_keys', bCol: 'id', polymorphic: { typeColumn: 'target_type', typeValue: 'api_key' }, desc: '密钥级配额规则' },
   { a: 'rate_limits', aCol: 'target_id', b: 'users', bCol: 'id', polymorphic: { typeColumn: 'target_type', typeValue: 'user' }, desc: '用户级配额规则' },
   { a: 'rate_limits', aCol: 'target_id', b: 'apps', bCol: 'id', polymorphic: { typeColumn: 'target_type', typeValue: 'app' }, desc: '应用级配额规则' },
+  // ── polymorphic ua_policies (same shape as rate_limits above) ──
+  { a: 'ua_policies', aCol: 'target_id', b: 'api_keys', bCol: 'id', polymorphic: { typeColumn: 'target_type', typeValue: 'api_key' }, desc: '密钥级 UA 名单' },
+  { a: 'ua_policies', aCol: 'target_id', b: 'users', bCol: 'id', polymorphic: { typeColumn: 'target_type', typeValue: 'user' }, desc: '用户级 UA 名单' },
+  { a: 'ua_policies', aCol: 'target_id', b: 'apps', bCol: 'id', polymorphic: { typeColumn: 'target_type', typeValue: 'app' }, desc: '应用级 UA 名单' },
 ];
 
 /**
  * Look up a declared join relation in EITHER direction. Returns the matched
- * relation plus which side (if any) is the polymorphic rate_limits table, so
- * the SQL builder knows where to pin the target_type condition. null when the
- * pair isn't whitelisted — callers reject the query.
+ * relation plus which side (if any) is the polymorphic table (rate_limits /
+ * ua_policies — carries a target_type discriminator), so the SQL builder knows
+ * where to pin the target_type condition. null when the pair isn't
+ * whitelisted — callers reject the query.
  */
 export function findJoinRelation(
   from: string,
   to: string,
   fromCol: string,
   toCol: string,
-): { relation: JoinRelation; rateLimitsSide: 'from' | 'to' | null } | null {
+): { relation: JoinRelation; polymorphicSide: 'from' | 'to' | null } | null {
   for (const r of JOIN_RELATIONS) {
     // forward: from=r.a, to=r.b
     if (r.a === from && r.b === to && r.aCol === fromCol && r.bCol === toCol) {
-      return { relation: r, rateLimitsSide: rateLimitsSideOf(r, true) };
+      return { relation: r, polymorphicSide: polymorphicSideOf(r, true) };
     }
     // reverse: from=r.b, to=r.a
     if (r.a === to && r.b === from && r.aCol === toCol && r.bCol === fromCol) {
-      return { relation: r, rateLimitsSide: rateLimitsSideOf(r, false) };
+      return { relation: r, polymorphicSide: polymorphicSideOf(r, false) };
     }
   }
   return null;
 }
 
-function rateLimitsSideOf(r: JoinRelation, forward: boolean): 'from' | 'to' | null {
+// By convention the polymorphic table is side `a` of the relation (the
+// typeColumn lives there), so forward → 'from', reverse → 'to'. Kept as a
+// function (not inlined) to document the convention next to the data.
+function polymorphicSideOf(r: JoinRelation, forward: boolean): 'from' | 'to' | null {
   if (!r.polymorphic) return null;
-  if (forward) {
-    // from = r.a, to = r.b
-    if (r.a === 'rate_limits') return 'from';
-    if (r.b === 'rate_limits') return 'to';
-  } else {
-    // from = r.b, to = r.a
-    if (r.a === 'rate_limits') return 'to';
-    if (r.b === 'rate_limits') return 'from';
-  }
-  return null;
+  return forward ? 'from' : 'to';
 }
 
 /**

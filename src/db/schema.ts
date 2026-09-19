@@ -182,6 +182,32 @@ export const rateLimits = mysqlTable(
   }),
 );
 
+// ─── ua_policies ─────────────────────────────────────────────────────────────
+// User-Agent allow/block lists per target (global / user / app / api_key).
+// Patterns are regex source strings matched case-insensitively against the
+// request's User-Agent header; mode 'block' denies a match, mode 'allow'
+// requires a match. Levels stack: any block hit denies, any configured allow
+// level must match (see src/services/ua-policy.ts).
+
+export const uaPolicies = mysqlTable(
+  'ua_policies',
+  {
+    id: bigint('id', { mode: 'number', unsigned: true }).primaryKey().autoincrement(),
+    targetType: mysqlEnum('target_type', ['global', 'app', 'user', 'api_key']).notNull(),
+    targetId: bigint('target_id', { mode: 'number', unsigned: true }),
+    mode: mysqlEnum('mode', ['block', 'allow']).notNull(),
+    patterns: json('patterns'),
+    createdAt: datetime('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: datetime('updated_at').notNull().default(sql`CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP`),
+  },
+  (table) => ({
+    targetTypeTargetIdUniq: uniqueIndex('idx_ua_policies_target').on(
+      table.targetType,
+      table.targetId,
+    ),
+  }),
+);
+
 // ─── usage_records ───────────────────────────────────────────────────────────
 
 export const usageRecords = mysqlTable(
@@ -373,6 +399,7 @@ export const schema = {
   virtualModels,
   providers,
   rateLimits,
+  uaPolicies,
   usageRecords,
   requestLogs,
   requestDetails,

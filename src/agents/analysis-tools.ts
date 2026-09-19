@@ -180,16 +180,17 @@ interface SelectColumn {
   heavy: boolean;
 }
 // A validated JOIN. ON columns + the relation itself are whitelisted in
-// parseQuerySpec; polymorphic rate_limits rows carry the discriminator column
-// (always on the rate_limits side) + the fixed typeValue (whitelist constant).
+// parseQuerySpec; polymorphic rows (rate_limits / ua_policies) carry the
+// discriminator column (always on the polymorphic side) + the fixed typeValue
+// (whitelist constant).
 interface JoinClause {
   table: string; // table being joined
   from: string; // left-side table (main or a previously-joined table)
   leftCol: string; // ON column on `from`
   rightCol: string; // ON column on `table`
   type: 'INNER' | 'LEFT';
-  rateLimitsSide: 'from' | 'to' | null; // which side is rate_limits (polymorphic only)
-  typeColumn?: string; // rate_limits.target_type (polymorphic only)
+  polymorphicSide: 'from' | 'to' | null; // which side is the polymorphic table (rate_limits / ua_policies)
+  typeColumn?: string; // e.g. rate_limits.target_type (polymorphic only)
   typeValue?: string; // 'api_key' | 'user' | 'app' (polymorphic only; whitelist constant)
 }
 interface QuerySpec {
@@ -401,7 +402,7 @@ function parseQuerySpec(input: unknown): SpecResult {
         leftCol,
         rightCol,
         type,
-        rateLimitsSide: rel.rateLimitsSide,
+        polymorphicSide: rel.polymorphicSide,
         typeColumn: rel.relation.polymorphic?.typeColumn,
         typeValue: rel.relation.polymorphic?.typeValue,
       });
@@ -597,13 +598,13 @@ function buildJoinClause(j: JoinClause): SQL {
   const typeText = j.type === 'LEFT' ? 'LEFT JOIN' : 'INNER JOIN';
   const onLeft = ident(j.from, j.leftCol);
   const onRight = ident(j.table, j.rightCol);
-  if (j.rateLimitsSide && j.typeColumn && j.typeValue) {
-    // Polymorphic rate_limits: the target_type discriminator lives on the
-    // rate_limits side (whichever of from/to that is). typeValue originates from
-    // the whitelist constant, but is still parameter-bound (never raw) as
-    // defense in depth.
-    const rlTable = j.rateLimitsSide === 'from' ? j.from : j.table;
-    const typeCond = sql`${ident(rlTable, j.typeColumn)} = ${j.typeValue}`;
+  if (j.polymorphicSide && j.typeColumn && j.typeValue) {
+    // Polymorphic join (rate_limits / ua_policies): the target_type discriminator
+    // lives on the polymorphic side (whichever of from/to that is). typeValue
+    // originates from the whitelist constant, but is still parameter-bound
+    // (never raw) as defense in depth.
+    const polyTable = j.polymorphicSide === 'from' ? j.from : j.table;
+    const typeCond = sql`${ident(polyTable, j.typeColumn)} = ${j.typeValue}`;
     return sql`${sql.raw(typeText)} ${ident(j.table)} ON ${typeCond} AND ${onLeft} = ${onRight}`;
   }
   return sql`${sql.raw(typeText)} ${ident(j.table)} ON ${onLeft} = ${onRight}`;

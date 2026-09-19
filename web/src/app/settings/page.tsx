@@ -9,10 +9,11 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
-import { getGlobalRateLimit, updateGlobalRateLimit, getLogRetention, updateLogRetention, getSystemInfo, changePassword, listProviders } from '@/lib/api';
-import { RateLimitConfig, SystemInfo, Provider } from '@/lib/types';
+import { getGlobalRateLimit, updateGlobalRateLimit, getLogRetention, updateLogRetention, getSystemInfo, changePassword, listProviders, getUaPolicy } from '@/lib/api';
+import { RateLimitConfig, SystemInfo, Provider, UaPolicy } from '@/lib/types';
 import { tokensToMillions, millionsToTokens } from '@/lib/utils';
-import { Loader2, Check, Save, Info, User, KeyRound } from 'lucide-react';
+import { UaPolicyDialog } from '@/components/ua-policy-dialog';
+import { Loader2, Check, Save, Info, User, KeyRound, ShieldBan } from 'lucide-react';
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -59,6 +60,12 @@ export default function SettingsPage() {
 
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
 
+  // Global UA allow/block list. The card shows a summary and opens the shared
+  // UaPolicyDialog for editing (type='global'); the dialog is the single
+  // source of editing logic across all four levels.
+  const [uaPolicy, setUaPolicy] = useState<UaPolicy | null>(null);
+  const [showUaDialog, setShowUaDialog] = useState(false);
+
   // Password change state
   const [pwForm, setPwForm] = useState({ current: '', newPass: '', confirm: '' });
   const [pwSaving, setPwSaving] = useState(false);
@@ -94,6 +101,8 @@ export default function SettingsPage() {
       });
 
     listProviders().then(setProviders).catch(() => {});
+
+    getUaPolicy('global').then(setUaPolicy).catch(() => {});
 
     getSystemInfo().then((info) => {
       setSystemInfo(info);
@@ -334,6 +343,47 @@ export default function SettingsPage() {
               </Button>
               {saved && <span className="text-green-600 text-sm flex items-center gap-1"><Check className="h-4 w-4" /> 已保存！</span>}
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>UA 访问控制（全局）</CardTitle>
+            <CardDescription>
+              按正则匹配 User-Agent 的黑白名单。四级（全局/用户/应用/密钥）叠加判定：黑名单任一级命中即拒绝；配置了白名单的级要求必须匹配（下级不会放宽上级限制）。用户/应用/密钥级名单在各自列表页的「UA 名单」中配置。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-sm">
+                {uaPolicy == null ? (
+                  <span className="text-muted-foreground">当前状态：未配置（默认放行全部 User-Agent）</span>
+                ) : (
+                  <span>
+                    当前状态：
+                    <span className={uaPolicy.mode === 'block' ? 'font-medium text-red-600' : 'font-medium text-green-600'}>
+                      {uaPolicy.mode === 'block' ? `黑名单 ${uaPolicy.patterns.length} 条` : `白名单 ${uaPolicy.patterns.length} 条`}
+                    </span>
+                    <span className="text-muted-foreground">（{uaPolicy.mode === 'block' ? '命中即拒绝' : '仅命中放行'}）</span>
+                  </span>
+                )}
+              </div>
+              <Button onClick={() => setShowUaDialog(true)}>
+                <ShieldBan className="mr-2 h-4 w-4" />
+                配置名单
+              </Button>
+            </div>
+            {showUaDialog && (
+              <UaPolicyDialog
+                open={showUaDialog}
+                onOpenChange={(open) => {
+                  setShowUaDialog(open);
+                  if (!open) getUaPolicy('global').then(setUaPolicy).catch(() => {});
+                }}
+                type="global"
+                label="全局（系统设置）"
+              />
+            )}
           </CardContent>
         </Card>
 

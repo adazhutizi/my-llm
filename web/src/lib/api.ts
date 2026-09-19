@@ -23,6 +23,7 @@ import type {
   LogSummaryResult,
   ArchiveStats,
   RateLimitConfig,
+  UaPolicy,
   LogRetentionConfig,
   SystemInfo,
   QuotaStatus,
@@ -709,6 +710,38 @@ export function setEntityRateLimit(
     method: 'PUT',
     body: JSON.stringify({ ...data, targetType: type, targetId: id }),
   });
+}
+
+// ── UA (User-Agent) allow/block lists ──────────────────────────────────────
+// One endpoint family for all four target levels; the global level simply
+// passes targetType='global' with no targetId.
+
+export function getUaPolicy(
+  type: 'global' | 'app' | 'user' | 'api_key',
+  id?: number,
+): Promise<UaPolicy | null> {
+  const q = id !== undefined ? `?targetType=${type}&targetId=${id}` : `?targetType=${type}`;
+  return fetchUnwrap<UaPolicy[]>(`/ua-policies${q}`)
+    .then(items => (items.length > 0 ? items[0] : null));
+}
+
+export function setUaPolicy(
+  type: 'global' | 'app' | 'user' | 'api_key',
+  id: number | undefined,
+  data: { mode: 'block' | 'allow'; patterns: string[] },
+): Promise<UaPolicy> {
+  return fetchUnwrap<UaPolicy>('/ua-policies', {
+    method: 'PUT',
+    body: JSON.stringify({ ...data, targetType: type, targetId: id ?? null }),
+  });
+}
+
+export function deleteUaPolicy(
+  type: 'global' | 'app' | 'user' | 'api_key',
+  id?: number,
+): Promise<{ success: boolean }> {
+  const q = id !== undefined ? `?targetType=${type}&targetId=${id}` : `?targetType=${type}`;
+  return fetchUnwrap<{ success: boolean }>(`/ua-policies${q}`, { method: 'DELETE' });
 }
 
 // ── 智能分析 Agent (SSE streaming) ────────────────────────────────────────

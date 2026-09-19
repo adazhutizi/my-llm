@@ -1,6 +1,6 @@
 // DB 列中文注释,供 scripts/apply-comments.ts 注入迁移 SQL 的 COMMENT。
 //
-// 13 张可查表的列 desc 从 src/agents/query-table-schema.ts 派生 —— 后者是
+// 14 张可查表的列 desc 从 src/agents/query-table-schema.ts 派生 —— 后者是
 // query_table 工具与 DB COMMENT 的「共同真相源」(描述最完整、面向分析)。这样
 // 「模型在 query_table 里看到的列含义」与「数据库 COMMENT」永远同源:改一处
 // (query-table-schema 的 ColumnMeta.desc),工具描述与 DB 注释两处同步。
@@ -15,7 +15,7 @@
 //     `pnpm db:gen` 会跑 scripts/check-schema-sync.ts 兜底校验列名一致。
 import { QUERYABLE_TABLES } from '../agents/query-table-schema.js';
 
-// 13 张可查表:取 query-table-schema 的 desc(table → {col → desc})。
+// 14 张可查表:取 query-table-schema 的 desc(table → {col → desc})。
 const derived: Record<string, Record<string, string>> = {};
 for (const t of QUERYABLE_TABLES) {
   const cols: Record<string, string> = {};

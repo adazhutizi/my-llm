@@ -747,7 +747,8 @@ describe('list_queryable_tables', () => {
     expect(names).not.toContain('admin_users'); // whole table excluded
     expect(names).toContain('usage_records');
     expect(names).toContain('api_keys');
-    expect(names).toHaveLength(13);
+    expect(names).toContain('ua_policies'); // 14th queryable table (2026-09)
+    expect(names).toHaveLength(14);
 
     const apiKeys = res.tables.find((x) => x.name === 'api_keys')!;
     expect(apiKeys.columns.find((c) => c.name === 'key_secret')?.sensitive).toBe(true);

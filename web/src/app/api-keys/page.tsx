@@ -34,12 +34,13 @@ import {
 } from '@/components/ui/alert-dialog';
 import { listApiKeys, createApiKey, updateApiKey, revokeApiKey, deleteApiKey, restoreTarget, revealApiKey, listUsers, listApps, listProviders } from '@/lib/api';
 import type { ApiKey, CreateApiKeyResponse, UpdateApiKeyRequest, User, App, Provider } from '@/lib/types';
-import { Loader2, Copy, Check, Settings2, Eye, EyeOff, ScrollText, PieChart, Search, Pencil, Boxes } from 'lucide-react';
+import { Loader2, Copy, Check, Settings2, Eye, EyeOff, ScrollText, PieChart, Search, Pencil, Boxes, ShieldBan } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { InlineCombobox } from '@/components/inline-combobox';
 import { QuotaConfigDialog } from '@/components/quota-config-dialog';
 import { QuotaIndicator } from '@/components/quota-indicator';
 import { ModelPolicyDialog } from '@/components/model-policy-dialog';
+import { UaPolicyDialog } from '@/components/ua-policy-dialog';
 import { formatDate, toBeijingDateTimeLocal } from '@/lib/utils';
 
 export default function ApiKeysPage() {
@@ -84,6 +85,10 @@ export default function ApiKeysPage() {
 
   // Model policy (allow/block list + per-model limits)
   const [modelPolicyTarget, setModelPolicyTarget] = useState<ApiKey | null>(null);
+
+  // UA allow/block list (applies to ALL key modes including dedicated — unlike
+  // modelPolicy, which is inert for dedicated transparent-proxy keys)
+  const [uaTarget, setUaTarget] = useState<ApiKey | null>(null);
 
   // Edit dialog
   const [editTarget, setEditTarget] = useState<ApiKey | null>(null);
@@ -407,6 +412,14 @@ export default function ApiKeysPage() {
           <Button
             variant="ghost"
             size="sm"
+            onClick={(e) => { e.stopPropagation(); setUaTarget(key); }}
+          >
+            <ShieldBan className="mr-1 h-4 w-4" />
+            UA 名单
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={(e) => { e.stopPropagation(); router.push(`/reports?apiKeyId=${key.id}`); }}
           >
             <PieChart className="mr-1 h-4 w-4" />
@@ -709,6 +722,17 @@ export default function ApiKeysPage() {
             onOpenChange={(open) => { if (!open) setModelPolicyTarget(null); }}
             apiKey={modelPolicyTarget}
             onSaved={load}
+          />
+        )}
+
+        {/* UA allow/block list */}
+        {uaTarget && (
+          <UaPolicyDialog
+            open={!!uaTarget}
+            onOpenChange={(open) => { if (!open) setUaTarget(null); }}
+            type="api_key"
+            id={uaTarget.id}
+            label={`API 密钥: ${uaTarget.name} (#${uaTarget.id})`}
           />
         )}
 

@@ -6,6 +6,7 @@ import { requestIdMiddleware } from './middleware/request-id.js';
 import { authMiddleware } from './middleware/auth.js';
 import { adminAuthMiddleware } from './middleware/admin-auth.js';
 import { rateLimitMiddleware } from './middleware/rate-limit.js';
+import { uaPolicyMiddleware } from './middleware/ua-policy.js';
 import { quotaCheckMiddleware } from './middleware/quota-check.js';
 import { usageTrackMiddleware } from './middleware/usage-track.js';
 import { dedicatedProxyMiddleware } from './middleware/dedicated-proxy.js';
@@ -24,6 +25,7 @@ import { adminApps } from './routes/admin/apps.js';
 import { adminModels } from './routes/admin/models.js';
 import { adminProviders } from './routes/admin/providers.js';
 import { adminRateLimits } from './routes/admin/rate-limits.js';
+import { adminUaPolicies } from './routes/admin/ua-policies.js';
 import { adminUsage } from './routes/admin/usage.js';
 import { adminLogs } from './routes/admin/logs.js';
 import { adminSettings } from './routes/admin/settings.js';
@@ -62,6 +64,7 @@ app.get('/health', (c) =>
 
 app.use('/openai/*', authMiddleware);
 app.use('/openai/*', rateLimitMiddleware);
+app.use('/openai/*', uaPolicyMiddleware);
 app.use('/openai/*', quotaCheckMiddleware);
 app.use('/openai/*', usageTrackMiddleware);
 app.use('/openai/*', dedicatedProxyMiddleware);
@@ -75,6 +78,7 @@ app.route('/openai/v1/images/generations', imageGenerations);
 
 app.use('/anthropic/*', authMiddleware);
 app.use('/anthropic/*', rateLimitMiddleware);
+app.use('/anthropic/*', uaPolicyMiddleware);
 app.use('/anthropic/*', quotaCheckMiddleware);
 app.use('/anthropic/*', usageTrackMiddleware);
 app.use('/anthropic/*', dedicatedProxyMiddleware);
@@ -100,6 +104,10 @@ app.route('/admin/apps', adminApps);
 app.route('/admin/models', adminModels);
 app.route('/admin/providers', adminProviders);
 app.route('/admin/rate-limits', adminRateLimits);
+// Same reason as /admin/settings below — adminQuotas' /:type/:id would
+// capture /admin/ua-policies as type=ua-policies. Owns the UA allow/block
+// list CRUD (GET/PUT/DELETE) for the four target levels.
+app.route('/admin/ua-policies', adminUaPolicies);
 app.route('/admin/usage', adminUsage);
 app.route('/admin/logs', adminLogs);
 // Registered BEFORE app.route('/admin', adminQuotas): adminQuotas is mounted at
@@ -152,7 +160,7 @@ app.use(
 //   - /dashboard/* static assets are served above, not intercepted here.
 // Only handles requests not matched by any specific route above.
 // dedicatedProxyMiddleware is a no-op for non-dedicated keys → 404.
-app.all('/*', authMiddleware, rateLimitMiddleware, quotaCheckMiddleware, usageTrackMiddleware, dedicatedProxyMiddleware);
+app.all('/*', authMiddleware, rateLimitMiddleware, uaPolicyMiddleware, quotaCheckMiddleware, usageTrackMiddleware, dedicatedProxyMiddleware);
 
 // ── Error handler ───────────────────────────────────────────────────────
 
