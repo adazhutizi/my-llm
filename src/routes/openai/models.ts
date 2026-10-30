@@ -20,12 +20,18 @@ models.get('/', async (c) => {
 
     // Filter by the key's model policy so clients only see what they can
     // actually call (a listed-but-403 model in /models is a footgun for
-    // SDK model-picking). Dedicated keys never reach this route — the
-    // dedicated proxy transparently forwards them upstream first.
+    // SDK model-picking). Dedicated keys normally never reach this route —
+    // the dedicated proxy transparently forwards them upstream first — EXCEPT
+    // while a manual-specification borrow is active (borrow_mode='provider'):
+    // those run through the Provider pipeline like regular keys, so scope the
+    // listing to the borrowed provider's models.
     const auth = c.get('auth') as AuthContext | undefined;
     const policy = parseModelPolicy(auth?.permissions);
 
     const conditions = [eq(virtualModels.isActive, true)];
+    if (auth?.borrowViaProvider && auth.borrowProviderName) {
+      conditions.push(eq(virtualModels.provider, auth.borrowProviderName));
+    }
     if (policy?.mode === 'allow') {
       // An empty allowlist allows nothing — skip the query entirely (an
       // IN () with zero values is invalid SQL and semantically empty here).

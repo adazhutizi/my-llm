@@ -5,16 +5,30 @@ import { Hono } from 'hono';
 // usage (isError=true) on upstream >=400, mirroring the three chat routes'
 // 2026-08 fix. Without it requestLogMiddleware's `if (!usage) return` skips
 // persistence and the upstream 429/401 vanishes from /logs entirely.
-vi.mock('../src/services/model-router.js', () => ({
-  resolveModel: vi.fn(async () => ({ provider: 'openai-main', realModel: 'text-embedding-3-real' })),
-  getProviderConfig: vi.fn(async () => ({
+vi.mock('../src/services/model-router.js', () => {
+  const resolveModel = vi.fn(async (_modelId: string) => ({ provider: 'openai-main', realModel: 'text-embedding-3-real' }));
+  const getProviderConfig = vi.fn(async (_providerName: string) => ({
     baseUrl: 'https://upstream.example.com/v1',
     apiKey: 'sk-upstream',
     apiType: 'openai',
     estimateFallback: false,
-  })),
-  createProvider: vi.fn(),
-}));
+  }));
+  // 路由现走 resolveModelWithBorrow（借调限定+凭证覆盖）；mock 组合两个被 mock
+  // 的底层函数，非借调场景（borrowOverrideFromAuth 返回 undefined）行为等价。
+  const resolveModelWithBorrow = vi.fn(async (modelId: string, borrow?: { providerName: string; apiKey: string }) => {
+    const resolved = await resolveModel(modelId);
+    const providerCfg = await getProviderConfig(resolved.provider);
+    if (borrow) providerCfg.apiKey = borrow.apiKey;
+    return { resolved, providerCfg };
+  });
+  return {
+    resolveModel,
+    getProviderConfig,
+    createProvider: vi.fn(),
+    resolveModelWithBorrow,
+    borrowOverrideFromAuth: vi.fn(() => undefined),
+  };
+});
 
 import { embeddings } from '../src/routes/openai/embeddings.js';
 import { imageGenerations } from '../src/routes/openai/images-generations.js';

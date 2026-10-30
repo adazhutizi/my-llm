@@ -1,0 +1,1 @@
+ALTER TABLE `api_keys` ADD `borrow_mode` enum('passthrough','provider') DEFAULT 'passthrough' NOT NULL COMMENT '借调调用模式：passthrough=原样透传，provider=走 Provider 管线（模型路由+协议转换）';

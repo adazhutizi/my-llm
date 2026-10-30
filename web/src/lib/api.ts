@@ -7,6 +7,7 @@ import type {
   CreateApiKeyRequest,
   CreateApiKeyResponse,
   UpdateApiKeyRequest,
+  BorrowUpstreamRequest,
   User,
   UserGroup,
   AdminUser,
@@ -269,6 +270,16 @@ export function deleteApiKey(id: number): Promise<void> {
 /** Reveal full API key secret */
 export function revealApiKey(id: number): Promise<{ id: number; keySecret: string }> {
   return fetchUnwrap<{ id: number; keySecret: string }>(`/api-keys/${id}/secret`);
+}
+
+/** 设置/替换一对一 key 的上游借调（覆盖语义） */
+export function borrowUpstreamKey(id: number, data: BorrowUpstreamRequest): Promise<ApiKey> {
+  return fetchUnwrap<ApiKey>(`/api-keys/${id}/borrow`, { method: 'POST', body: JSON.stringify(data) });
+}
+
+/** 手动还原一对一 key 的上游借调（幂等） */
+export function restoreUpstreamKey(id: number): Promise<ApiKey> {
+  return fetchUnwrap<ApiKey>(`/api-keys/${id}/borrow`, { method: 'DELETE' });
 }
 
 // ── Admins ────────────────────────────────────────────────────────────────

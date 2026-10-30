@@ -1,6 +1,8 @@
 import { Context, Next } from 'hono';
 import { sign } from 'hono/jwt';
 import { validateApiKey, detectKeyMode } from '../services/api-key.js';
+import { isBorrowActive, isBorrowExpired } from '../services/borrow.js';
+import { clearApiKeyBorrow } from '../db/repositories/api-keys.js';
 import { verifyJwtToken } from '../services/admin-auth.js';
 import { getConfig } from '../config/index.js';
 import { getDb } from '../db/index.js';
@@ -33,6 +35,11 @@ export interface AuthContext {
   providerName?: string;
   providerEstimateFallback?: boolean;
   upstreamApiKey?: string;
+  // 上游借调·手动指定模式（borrow_mode='provider'）：dedicatedProxy 放行，请求
+  // 改走普通密钥的 Provider 管线（模型路由 + 协议转换），borrowProviderName 供
+  // 路由限定模型归属，upstreamApiKey 为借来凭证（覆盖 provider 默认 key）。
+  borrowViaProvider?: boolean;
+  borrowProviderName?: string;
 }
 
 declare module 'hono' {
@@ -213,6 +220,36 @@ export async function authMiddleware(c: Context, next: Next) {
 
   // For dedicated mode: resolve bound provider info
   if (mode === 'dedicated' && keyRecord.providerId) {
+    // ── 上游借调判定 ──
+    // 借用生效（已到开始时间且未到期）→ 改用借调服务商 + 借来的凭证（原 key 永不
+    // 被覆盖）；已到期 → 惰性恢复：当场清库回退原凭证（无定时器，多实例天然
+    // 安全）；**未到开始时间（已预约）→ 不清除、照常走原凭证**——跨过开始时间
+    // 后的下一次请求自动切到借用。
+    const borrowFields = {
+      hasBorrowedKey: !!keyRecord.borrowedUpstreamKey,
+      borrowedProviderId: keyRecord.borrowedProviderId,
+      borrowStartAt: keyRecord.borrowStartedAt,
+      borrowExpiresAt: keyRecord.borrowExpiresAt,
+    };
+    const borrowing = isBorrowActive(borrowFields);
+    let effectiveProviderId = keyRecord.providerId;
+    let effectiveUpstreamKey = keyRecord.upstreamApiKeyEnc ?? '';
+    if (borrowing) {
+      effectiveProviderId = keyRecord.borrowedProviderId!;
+      effectiveUpstreamKey = keyRecord.borrowedUpstreamKey!;
+    } else if (isBorrowExpired(borrowFields)) {
+      try {
+        await clearApiKeyBorrow(keyRecord.id);
+        getLogger().info(
+          { keyId: keyRecord.id, providerId: keyRecord.providerId },
+          'Borrow expired, restored original upstream key (lazy)',
+        );
+      } catch (err) {
+        // 恢复失败不阻断请求：内存里已决定回退原凭证，字段残留等下次请求再清。
+        getLogger().warn({ err, keyId: keyRecord.id }, 'Failed to clear expired borrow (lazy restore)');
+      }
+    }
+
     const db = getDb();
     const [provider] = await db
       .select({
@@ -223,7 +260,7 @@ export async function authMiddleware(c: Context, next: Next) {
         config: providers.config,
       })
       .from(providers)
-      .where(eq(providers.id, keyRecord.providerId))
+      .where(eq(providers.id, effectiveProviderId))
       .limit(1);
 
     if (!provider) {
@@ -236,12 +273,19 @@ export async function authMiddleware(c: Context, next: Next) {
     }
 
     const cfg = (provider.config as Record<string, unknown>) || {};
-    auth.providerId = keyRecord.providerId;
+    auth.providerId = effectiveProviderId;
     auth.providerBaseUrl = provider.baseUrl;
     auth.providerApiType = provider.apiType;
     auth.providerName = provider.name;
     auth.providerEstimateFallback = cfg.estimateFallback === true;
-    auth.upstreamApiKey = keyRecord.upstreamApiKeyEnc ?? '';
+    auth.upstreamApiKey = effectiveUpstreamKey;
+    // 手动指定服务商的借调走 Provider 管线：dedicatedProxy 据此放行，路由侧据
+    // borrowProviderName 限定模型归属并覆盖凭证（见 model-router 的
+    // resolveModelWithBorrow）。从密钥借调（'passthrough'）不设——照常透传。
+    if (borrowing && keyRecord.borrowMode === 'provider') {
+      auth.borrowViaProvider = true;
+      auth.borrowProviderName = provider.name;
+    }
   }
 
   // For app mode: resolve or create app_users record from X-App-User-Id header

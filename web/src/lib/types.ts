@@ -74,6 +74,7 @@ export interface ApiKey {
   provider?: { id: number; name: string } | null;
   user?: { id: number; username: string } | null;
   app?: { id: number; name: string } | null;
+  borrow?: ApiKeyBorrow | null;
 }
 
 export interface CreateApiKeyRequest {
@@ -98,6 +99,41 @@ export interface UpdateApiKeyRequest {
   providerId?: number;
   upstreamApiKey?: string;
   permissions?: { modelPolicy?: ModelPolicy } | null;
+}
+
+/** 一对一 key 的上游借调状态（admin 列表/详情返回，不含借来 key 的明文）。 */
+export interface ApiKeyBorrow {
+  /** 进行中（已到开始时间且未到期）。 */
+  active: boolean;
+  /** 已预约未开始（开始时间在未来）。 */
+  scheduled: boolean;
+  /** 到期时间已过（auth 惰性恢复会清除，或手动还原）。 */
+  expired: boolean;
+  /** 调用模式：passthrough=原样透传（从密钥借）；provider=走 Provider 管线（手动指定）。 */
+  mode: 'passthrough' | 'provider';
+  providerId: number;
+  providerName: string | null;
+  /** 来源一对一密钥（从密钥借时展示「借自谁」；手动指定为 null）。 */
+  fromKeyId: number | null;
+  fromKeyName: string | null;
+  startedAt: string | null;
+  expiresAt: string | null;
+  note: string | null;
+}
+
+export interface BorrowUpstreamRequest {
+  /** 从另一个一对一 key 借（复制其当前生效凭证快照）。 */
+  sourceKeyId?: number;
+  /** 来源生效服务商与当前密钥绑定的服务商不同时须显式传 true（默认仅同服务商）。 */
+  allowCrossProvider?: boolean;
+  /** 手动指定：providerId 必填；upstreamApiKey 留空则用该服务商的默认密钥。 */
+  providerId?: number;
+  upstreamApiKey?: string;
+  /** 借调开始时间（ISO），缺省 = 立即开始；可预约未来时刻。 */
+  startAt?: string | null;
+  /** 借调到期时间（ISO），null/缺省 = 不限期直到手动还原。 */
+  expiresAt?: string | null;
+  note?: string;
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────
@@ -211,6 +247,8 @@ export interface Provider {
   isActive: boolean;
   config: Record<string, unknown> | null;
   createdAt: string;
+  /** 后端列表返回全行（含密钥明文）；借调对话框用它判断能否留空借默认密钥。 */
+  apiKeyEnc?: string | null;
 }
 
 // ── Request Logs ──────────────────────────────────────────────────────────

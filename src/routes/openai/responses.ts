@@ -3,7 +3,7 @@ import { streamSSE } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 import type { InternalRequest, InternalResponse, ContentBlock } from '../../types/internal.js';
 import type { UpstreamStreamChunk } from '../../providers/base.js';
-import { resolveModel, getProviderConfig, createProvider } from '../../services/model-router.js';
+import { resolveModelWithBorrow, borrowOverrideFromAuth, createProvider } from '../../services/model-router.js';
 import { passthroughUpstream } from '../../services/passthrough.js';
 import {
   GatewayError,
@@ -61,8 +61,12 @@ responses.post('/', async (c) => {
 
   try {
     // ── Route to the correct provider ────────────────────────────────────
-    const resolved = await resolveModel(modelId);
-    const providerCfg = await getProviderConfig(resolved.provider);
+    // 借调限定 + 凭证覆盖：dedicated key 手动借调生效时仅允许借调服务商的模型，
+    // 上游凭证用借来的 key（见 resolveModelWithBorrow）。
+    const { resolved, providerCfg } = await resolveModelWithBorrow(
+      modelId,
+      borrowOverrideFromAuth(c.get('auth')),
+    );
 
     // 同族透传:Responses 客户端 + OpenAI 系上游时不经 Internal 中转,原样转发到
     // 上游 /responses(避免 Internal 中转丢失 previous_response_id/store/include

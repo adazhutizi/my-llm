@@ -2,11 +2,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Hono } from 'hono';
 
 // Mock the model router and provider
-vi.mock('../src/services/model-router.js', () => ({
-  resolveModel: vi.fn(),
-  getProviderConfig: vi.fn(),
-  createProvider: vi.fn(),
-}));
+vi.mock('../src/services/model-router.js', () => {
+  const resolveModel = vi.fn();
+  const getProviderConfig = vi.fn();
+  // 路由现走 resolveModelWithBorrow（借调限定+凭证覆盖）；mock 组合两个被 mock
+  // 的底层函数，非借调场景（borrowOverrideFromAuth 返回 undefined）行为等价。
+  const resolveModelWithBorrow = vi.fn(async (modelId: string, borrow?: { providerName: string; apiKey: string }) => {
+    const resolved = await resolveModel(modelId);
+    const providerCfg = await getProviderConfig(resolved.provider);
+    if (borrow) providerCfg.apiKey = borrow.apiKey;
+    return { resolved, providerCfg };
+  });
+  return {
+    resolveModel,
+    getProviderConfig,
+    createProvider: vi.fn(),
+    resolveModelWithBorrow,
+    borrowOverrideFromAuth: vi.fn(() => undefined),
+  };
+});
 
 // 路由 ≥400 分支与流式 openStream catch 现会经 getLogger/logUpstreamError 打
 // 控制台日志;getLogger 未初始化会抛错,mock 成 no-op(惯例见 passthrough.test.ts)。

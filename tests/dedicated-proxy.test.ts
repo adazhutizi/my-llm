@@ -51,6 +51,23 @@ describe('dedicatedProxyMiddleware (一对一透传)', () => {
     vi.unstubAllGlobals();
   });
 
+  it('手动借调(borrowViaProvider)放行到后续路由,不透传上游', async () => {
+    // 手动指定服务商的借调走普通密钥的 Provider 管线(模型路由+协议转换),
+    // dedicatedProxy 必须 next() 放行——fetch 不应被调用,请求穿透到 buildApp
+    // 的兜底 handler(500 'unreachable' 即证明穿透)。
+    const app = buildApp({ ...dedicatedAuth, borrowViaProvider: true, borrowProviderName: 'borrowed-p' });
+
+    const res = await app.request('/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ded_sk_x' },
+      body: JSON.stringify({ model: 'gpt-4o', messages: [] }),
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toBe('unreachable');
+  });
+
   it('流式响应 content-type 透传上游原值(charset 变体),其余上游头不透传', async () => {
     // 回归:stream() 裸调 c.newResponse 不带任何头,流式响应曾完全没有 content-type
     // (上游的 text/event-stream 只进了日志的 responseHeaders,没到客户端)。修复:

@@ -1,0 +1,1 @@
+ALTER TABLE `api_keys` ADD `borrowed_from_key_id` bigint unsigned COMMENT '来源一对一密钥 id（从密钥借时记录，手动指定为空），可空';

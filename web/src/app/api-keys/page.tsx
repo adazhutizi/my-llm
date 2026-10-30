@@ -34,14 +34,15 @@ import {
 } from '@/components/ui/alert-dialog';
 import { listApiKeys, createApiKey, updateApiKey, revokeApiKey, deleteApiKey, restoreTarget, revealApiKey, listUsers, listApps, listProviders } from '@/lib/api';
 import type { ApiKey, CreateApiKeyResponse, UpdateApiKeyRequest, User, App, Provider } from '@/lib/types';
-import { Loader2, Copy, Check, Settings2, Eye, EyeOff, ScrollText, PieChart, Search, Pencil, Boxes, ShieldBan } from 'lucide-react';
+import { Loader2, Copy, Check, Settings2, Eye, EyeOff, ScrollText, PieChart, Search, Pencil, Boxes, ShieldBan, ArrowLeftRight } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { InlineCombobox } from '@/components/inline-combobox';
 import { QuotaConfigDialog } from '@/components/quota-config-dialog';
 import { QuotaIndicator } from '@/components/quota-indicator';
 import { ModelPolicyDialog } from '@/components/model-policy-dialog';
 import { UaPolicyDialog } from '@/components/ua-policy-dialog';
-import { formatDate, toBeijingDateTimeLocal } from '@/lib/utils';
+import { BorrowDialog } from '@/components/borrow-dialog';
+import { formatDate, formatDateTime, toBeijingDateTimeLocal } from '@/lib/utils';
 
 export default function ApiKeysPage() {
   const router = useRouter();
@@ -89,6 +90,9 @@ export default function ApiKeysPage() {
   // UA allow/block list (applies to ALL key modes including dedicated — unlike
   // modelPolicy, which is inert for dedicated transparent-proxy keys)
   const [uaTarget, setUaTarget] = useState<ApiKey | null>(null);
+
+  // Upstream borrow (dedicated only): temporarily route via another upstream key
+  const [borrowTarget, setBorrowTarget] = useState<ApiKey | null>(null);
 
   // Edit dialog
   const [editTarget, setEditTarget] = useState<ApiKey | null>(null);
@@ -354,6 +358,58 @@ export default function ApiKeysPage() {
       },
     },
     {
+      key: 'upstream',
+      header: '上游',
+      render: (key: ApiKey) => {
+        if (key.mode !== 'dedicated') {
+          return <span className="text-xs text-muted-foreground">—</span>;
+        }
+        const borrow = key.borrow ?? null;
+        if (borrow?.active) {
+          return (
+            <div className="min-w-0">
+              <span className="inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset bg-amber-50 text-amber-700 ring-amber-600/20">
+                借调 → {borrow.providerName ?? `#${borrow.providerId}`}
+              </span>
+              {borrow.mode === 'provider' && (
+                <span className="ml-1.5 text-xs text-muted-foreground">协议转换</span>
+              )}
+              <p className="text-xs text-muted-foreground mt-1">
+                {borrow.fromKeyId != null && <>借自 {borrow.fromKeyName ?? `密钥 #${borrow.fromKeyId}`} · </>}
+                {borrow.expiresAt ? `到期 ${formatDateTime(borrow.expiresAt)}` : '不限期（手动还原）'}
+              </p>
+            </div>
+          );
+        }
+        if (borrow?.scheduled) {
+          return (
+            <div className="min-w-0">
+              <span className="text-sm">{key.provider?.name ?? '—'}</span>
+              <span className="ml-2 inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset bg-sky-50 text-sky-700 ring-sky-600/20">
+                已预约 → {borrow.providerName ?? `#${borrow.providerId}`}
+              </span>
+              <p className="text-xs text-muted-foreground mt-1">
+                {borrow.fromKeyId != null && <>借自 {borrow.fromKeyName ?? `密钥 #${borrow.fromKeyId}`} · </>}
+                {borrow.startedAt ? `${formatDateTime(borrow.startedAt)} 开始` : ''}
+                {borrow.expiresAt ? `，到期 ${formatDateTime(borrow.expiresAt)}` : ''}
+              </p>
+            </div>
+          );
+        }
+        if (borrow?.expired) {
+          return (
+            <div className="min-w-0">
+              <span className="text-sm">{key.provider?.name ?? '—'}</span>
+              <span className="ml-2 inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset bg-gray-100 text-gray-500 ring-gray-400/20">
+                借调已过期，待还原
+              </span>
+            </div>
+          );
+        }
+        return <span className="text-sm">{key.provider?.name ?? '—'}</span>;
+      },
+    },
+    {
       key: 'createdAt',
       header: '创建时间',
       render: (key: ApiKey) => formatDate(key.createdAt),
@@ -407,6 +463,17 @@ export default function ApiKeysPage() {
             >
               <Boxes className="mr-1 h-4 w-4" />
               模型
+            </Button>
+          )}
+          {key.mode === 'dedicated' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className={key.borrow?.active ? 'text-amber-700 hover:text-amber-800' : key.borrow?.scheduled ? 'text-sky-700 hover:text-sky-800' : ''}
+              onClick={(e) => { e.stopPropagation(); setBorrowTarget(key); }}
+            >
+              <ArrowLeftRight className="mr-1 h-4 w-4" />
+              {key.borrow?.active ? '借调中' : key.borrow?.scheduled ? '已预约' : '借调'}
             </Button>
           )}
           <Button
@@ -733,6 +800,16 @@ export default function ApiKeysPage() {
             type="api_key"
             id={uaTarget.id}
             label={`API 密钥: ${uaTarget.name} (#${uaTarget.id})`}
+          />
+        )}
+
+        {/* Upstream borrow (dedicated only) */}
+        {borrowTarget && (
+          <BorrowDialog
+            open={!!borrowTarget}
+            onOpenChange={(open) => { if (!open) setBorrowTarget(null); }}
+            apiKey={borrowTarget}
+            onSaved={load}
           />
         )}
 

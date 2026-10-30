@@ -84,6 +84,24 @@ export const apiKeys = mysqlTable(
     // setting doesn't affect, so nullable defaults work naturally now.
     expiresAt: datetime('expires_at').default(sql`NULL`),
     createdAt: datetime('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+    // ── 上游借调（dedicated 专用旁路字段，永不覆盖 upstream_api_key_enc）──
+    // 原 key 上游额度耗尽时，管理员临时借用其他上游凭证：借调期间请求改用
+    // borrowed_provider_id 的 baseUrl + borrowed_upstream_key 凭证；到期或手动
+    // 还原 = 清空这组字段，回退 provider_id + upstream_api_key_enc。
+    // borrow_started_at 语义为「借调开始时间」：空=立即，可预约未来时刻（未到
+    // 开始时间前请求照常走原凭证，跨过开始时间自动切换）。
+    borrowedUpstreamKey: text('borrowed_upstream_key'),
+    borrowedProviderId: bigint('borrowed_provider_id', { mode: 'number', unsigned: true }),
+    // 来源一对一密钥 id（从密钥借时记录；手动指定为 NULL）——凭证是快照，
+    // 不存来源的话借调中无法回答「这是从谁那借的」。
+    borrowedFromKeyId: bigint('borrowed_from_key_id', { mode: 'number', unsigned: true }),
+    borrowExpiresAt: datetime('borrow_expires_at'),
+    borrowStartedAt: datetime('borrow_started_at'),
+    borrowNote: varchar('borrow_note', { length: 200 }),
+    // 借调调用模式：passthrough=原样透传(从其他一对一密钥借，含跨服务商——
+    // dedicated 一对一本义)；provider=走普通密钥的 Provider 管线(手动指定服务
+    // 商：模型路由+双协议转换，网关转换客户端协议而非透传撞墙)。
+    borrowMode: mysqlEnum('borrow_mode', ['passthrough', 'provider']).notNull().default('passthrough'),
   },
   (table) => ({
     keySecretIdx: index('idx_api_keys_key_secret').on(table.keySecret),

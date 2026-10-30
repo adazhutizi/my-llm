@@ -28,6 +28,13 @@ export async function dedicatedProxyMiddleware(c: Context, next: Next) {
     return next();
   }
 
+  // 手动指定服务商的借调（borrow_mode='provider'）不走透传：放行到后面的
+  // LLM 路由（/openai/v1/*、/anthropic/v1/messages），改走普通密钥的 Provider
+  // 管线（模型路由 + 双协议转换，凭证为借来的 key）。从密钥借调照常透传。
+  if (auth.borrowViaProvider) {
+    return next();
+  }
+
   if (!auth.providerBaseUrl) {
     return c.json({ error: { message: 'Dedicated key has no bound provider', type: 'invalid_request_error' } }, 400);
   }

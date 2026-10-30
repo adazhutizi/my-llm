@@ -154,7 +154,7 @@ export const QUERYABLE_TABLES: readonly TableMeta[] = [
   },
   {
     name: 'api_keys',
-    desc: '网关 API 密钥（敏感列禁查：key_secret / upstream_api_key_enc）',
+    desc: '网关 API 密钥（敏感列禁查：key_secret / upstream_api_key_enc / borrowed_upstream_key）',
     columns: [
       { name: 'id', kind: 'bigint', desc: '行 id' },
       { name: 'key_secret', kind: 'string', sensitive: true, desc: '明文 API key，禁查' },
@@ -174,6 +174,18 @@ export const QUERYABLE_TABLES: readonly TableMeta[] = [
       },
       { name: 'expires_at', kind: 'datetime', desc: '过期时间，可空' },
       { name: 'created_at', kind: 'datetime', desc: '创建时间' },
+      { name: 'borrowed_upstream_key', kind: 'text', sensitive: true, desc: '借调中的上游 key 快照（明文存储，禁查）' },
+      { name: 'borrowed_provider_id', kind: 'bigint', desc: '借调期间路由的服务商 id，可空' },
+      { name: 'borrowed_from_key_id', kind: 'bigint', desc: '来源一对一密钥 id（从密钥借时记录，手动指定为空），可空' },
+      { name: 'borrow_expires_at', kind: 'datetime', desc: '借调到期时间（过期自动回退原 key），可空=不限期' },
+      { name: 'borrow_started_at', kind: 'datetime', desc: '借调开始时间（可预约未来，空=立即开始），可空' },
+      { name: 'borrow_note', kind: 'string', desc: '借调备注，可空' },
+      {
+        name: 'borrow_mode',
+        kind: 'enum',
+        enumValues: ['passthrough', 'provider'],
+        desc: '借调调用模式：passthrough=原样透传，provider=走 Provider 管线（模型路由+协议转换）',
+      },
     ],
   },
   {

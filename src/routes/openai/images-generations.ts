@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import {
-  resolveModel,
-  getProviderConfig,
+  resolveModelWithBorrow,
+  borrowOverrideFromAuth,
   createProvider,
 } from '../../services/model-router.js';
 import {
@@ -36,8 +36,12 @@ imageGenerations.post('/', async (c) => {
   }
 
   try {
-    const resolved = await resolveModel(modelId);
-    const providerCfg = await getProviderConfig(resolved.provider);
+    // 借调限定 + 凭证覆盖：dedicated key 手动借调生效时仅允许借调服务商的模型，
+    // 上游凭证用借来的 key（见 resolveModelWithBorrow）。
+    const { resolved, providerCfg } = await resolveModelWithBorrow(
+      modelId,
+      borrowOverrideFromAuth(c.get('auth')),
+    );
 
     // Anthropic does not support image generation
     if (providerCfg.apiType === 'anthropic') {
