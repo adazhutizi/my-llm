@@ -12,8 +12,9 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { listLogs, getLogDetail, getLogFilterOptions, listUsers, listApiKeys, listApps, listUserGroups, archiveLogs, generateLogSummary } from '@/lib/api';
 import { RequestLog, RequestDetail, User, ApiKey, App, UserGroup, ApiError, LogSummaryMeta } from '@/lib/types';
-import { Loader2, Filter, ChevronDown, ChevronUp } from 'lucide-react';
+import { Loader2, Filter, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatDateTime, beijingTodayStart, toBeijingDateTimeLocal } from '@/lib/utils';
+import { redactForDisplay, extractImageSrcs } from '@/lib/log-display';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -63,6 +64,11 @@ function LogsPageContent() {
   const [dateTo, setDateTo] = useState(defaults.dateTo);
   const [selectedLog, setSelectedLog] = useState<RequestLog | null>(null);
   const [detail, setDetail] = useState<RequestDetail | null>(null);
+  // images 生成响应里的图片（b64_json/url）——命中时详情对话框渲染缩略图网格
+  const imageSrcs = useMemo(() => extractImageSrcs(detail?.responseBody), [detail]);
+  // 页内放大预览：当前放大第几张（null=未打开）。索引基于 imageSrcs；
+  // 详情关闭时置 null，open 判定同时校验索引越界兜底 imageSrcs 清空的瞬间。
+  const [imagePreviewIndex, setImagePreviewIndex] = useState<number | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   // 详情加载失败（绝大多数是 404 — dedicated 日志的 request_details 未持久化，
   // 或已超过详情保留期被清理）。非空时对话框改展示列表行概要 + 不可用提示，
@@ -510,7 +516,7 @@ function LogsPageContent() {
           />
         </MergeArrowsOverlay>
 
-        <Dialog open={!!selectedLog} onOpenChange={(open) => !open && setSelectedLog(null)}>
+        <Dialog open={!!selectedLog} onOpenChange={(open) => { if (!open) { setSelectedLog(null); setImagePreviewIndex(null); } }}>
           <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col">
             <DialogHeader>
               <DialogTitle>请求详情</DialogTitle>
@@ -589,7 +595,7 @@ function LogsPageContent() {
                 <div>
                   <h4 className="font-medium mb-2">请求内容</h4>
                   <pre className="rounded bg-muted p-4 max-h-60 overflow-auto text-xs break-all">
-                    {JSON.stringify(detail.requestBody, null, 2)}
+                    {JSON.stringify(redactForDisplay(detail.requestBody), null, 2)}
                   </pre>
                 </div>
                 <div>
@@ -601,10 +607,30 @@ function LogsPageContent() {
                       </span>
                     )}
                   </h4>
+                  {/* images 响应：先渲染缩略图网格（点击页内放大），
+                      JSON 文本里的 b64_json 已被 redactForDisplay 替换为占位，
+                      避免几 MB base64 塞进 <pre break-all> 冻结页面 */}
+                  {imageSrcs.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-2">
+                      {imageSrcs.map((src, i) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => setImagePreviewIndex(i)}
+                          title="点击放大查看"
+                          className="block cursor-zoom-in rounded border bg-muted p-1 transition-shadow hover:shadow-md focus:outline-none focus:ring-2 focus:ring-ring"
+                        >
+                          <img src={src} alt={`生成图片 ${i + 1}`} className="max-h-40 max-w-full object-contain" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <pre className="rounded bg-muted p-4 max-h-60 overflow-auto text-xs break-all">
                     {detail.responseBody
-                      ? JSON.stringify(detail.responseBody, null, 2)
-                      : detail.streamChunks ?? 'null'}
+                      ? JSON.stringify(redactForDisplay(detail.responseBody), null, 2)
+                      : typeof detail.streamChunks === 'string'
+                        ? (redactForDisplay(detail.streamChunks) as string)
+                        : 'null'}
                   </pre>
                 </div>
                 <div>
@@ -668,6 +694,65 @@ function LogsPageContent() {
                 )}
               </div>
             ) : null}
+          </DialogContent>
+        </Dialog>
+
+        {/* 图片页内放大预览（与详情 Dialog 平级，避免嵌套焦点管理）。
+            透明背景贴黑色遮罩，DialogContent 内置的右上角 X 用任意变体染白。
+            多图时支持左右切换（按钮 + 键盘方向键），并保留新标签页打开兜底。 */}
+        <Dialog
+          open={imagePreviewIndex !== null && imagePreviewIndex < imageSrcs.length}
+          onOpenChange={(open) => !open && setImagePreviewIndex(null)}
+        >
+          <DialogContent
+            className="w-fit max-w-[92vw] gap-2 border-0 bg-transparent p-2 shadow-none [&>button]:text-white [&>button]:opacity-80 [&>button]:hover:opacity-100"
+            onKeyDown={(e) => {
+              if (imagePreviewIndex === null) return;
+              if (e.key === 'ArrowLeft' && imagePreviewIndex > 0) setImagePreviewIndex(imagePreviewIndex - 1);
+              if (e.key === 'ArrowRight' && imagePreviewIndex < imageSrcs.length - 1) setImagePreviewIndex(imagePreviewIndex + 1);
+            }}
+          >
+            <DialogTitle className="sr-only">图片预览</DialogTitle>
+            <DialogDescription className="sr-only">生成图片放大预览</DialogDescription>
+            <div className="flex items-center gap-2">
+              {imagePreviewIndex !== null && imagePreviewIndex > 0 && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="shrink-0 rounded-full text-white hover:bg-black/50 hover:text-white"
+                  onClick={() => setImagePreviewIndex((imagePreviewIndex ?? 0) - 1)}
+                >
+                  <ChevronLeft className="h-6 w-6" />
+                </Button>
+              )}
+              {imagePreviewIndex !== null && (
+                <img
+                  src={imageSrcs[imagePreviewIndex]}
+                  alt={`生成图片 ${imagePreviewIndex + 1}`}
+                  className="max-h-[80vh] max-w-[86vw] rounded object-contain"
+                />
+              )}
+              {imagePreviewIndex !== null && imagePreviewIndex < imageSrcs.length - 1 && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="shrink-0 rounded-full text-white hover:bg-black/50 hover:text-white"
+                  onClick={() => setImagePreviewIndex((imagePreviewIndex ?? 0) + 1)}
+                >
+                  <ChevronRight className="h-6 w-6" />
+                </Button>
+              )}
+            </div>
+            <div className="text-center text-xs text-white/80">
+              {imagePreviewIndex !== null && imageSrcs.length > 1 && (
+                <span className="mr-3">第 {imagePreviewIndex + 1} / {imageSrcs.length} 张（方向键切换）</span>
+              )}
+              {imagePreviewIndex !== null && (
+                <a href={imageSrcs[imagePreviewIndex]} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-white">
+                  在新标签页打开原图
+                </a>
+              )}
+            </div>
           </DialogContent>
         </Dialog>
 
