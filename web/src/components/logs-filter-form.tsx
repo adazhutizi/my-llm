@@ -3,10 +3,8 @@
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { InlineCombobox } from '@/components/inline-combobox';
 import { Search, Archive } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import type { User, ApiKey, App, UserGroup } from '@/lib/types';
 
 /** 请求日志页过滤器状态形状（logs/page.tsx 持有 state，此组件纯受控）。 */
@@ -74,44 +72,44 @@ export function LogsFilterForm({
         <Label>结束时间</Label>
         <Input type="datetime-local" value={dateTo} onChange={(e) => onDateToChange(e.target.value)} />
       </div>
-      <div>
+      <div className="w-[200px]">
         <Label>服务商</Label>
-        <Select value={filters.provider || '__all__'} onValueChange={(v) => onFiltersChange({ ...filters, provider: v === '__all__' ? '' : v })}>
-          <SelectTrigger className={cn('w-[180px]', !filters.provider && 'text-muted-foreground')}><SelectValue placeholder="全部" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">全部</SelectItem>
-            {Array.from(new Set([filters.provider, ...filterOptions.providers])).filter(Boolean).map((p) => (
-              <SelectItem key={p} value={p}>{p}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <InlineCombobox
+          options={Array.from(new Set([filters.provider, ...filterOptions.providers])).filter(Boolean).map((p) => ({ value: p, label: p }))}
+          value={filters.provider}
+          onChange={(v) => onFiltersChange({ ...filters, provider: v })}
+          placeholder="全部服务商"
+          searchPlaceholder="搜索服务商..."
+          emptyText="未找到服务商"
+          allowClear
+          clearLabel="全部服务商"
+        />
       </div>
-      <div>
+      <div className="w-[200px]">
         <Label>模型</Label>
-        <Select value={filters.model || '__all__'} onValueChange={(v) => onFiltersChange({ ...filters, model: v === '__all__' ? '' : v })}>
-          <SelectTrigger className={cn('w-[180px]', !filters.model && 'text-muted-foreground')}><SelectValue placeholder="全部" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">全部</SelectItem>
-            {Array.from(new Set([filters.model, ...filterOptions.models])).filter(Boolean).map((m) => (
-              <SelectItem key={m} value={m}>{m}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <InlineCombobox
+          options={Array.from(new Set([filters.model, ...filterOptions.models])).filter(Boolean).map((m) => ({ value: m, label: m }))}
+          value={filters.model}
+          onChange={(v) => onFiltersChange({ ...filters, model: v })}
+          placeholder="全部模型"
+          searchPlaceholder="搜索模型..."
+          emptyText="未找到模型"
+          allowClear
+          clearLabel="全部模型"
+        />
       </div>
-      <div>
+      <div className="w-[200px]">
         <Label>分组</Label>
-        <Select
-          value={filters.groupId || '__all__'}
-          onValueChange={(v) => onFiltersChange({ ...filters, groupId: v === '__all__' ? '' : v, userId: '', apiKeyId: '' })}
-        >
-          <SelectTrigger className={cn('w-[180px]', !filters.groupId && 'text-muted-foreground')}><SelectValue placeholder="全部分组" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all__">全部分组</SelectItem>
-            {groups.map((g) => (
-              <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <InlineCombobox
+          options={groups.map((g) => ({ value: String(g.id), label: g.name }))}
+          value={filters.groupId}
+          onChange={(v) => onFiltersChange({ ...filters, groupId: v, userId: '', apiKeyId: '' })}
+          placeholder="全部分组"
+          searchPlaceholder="搜索分组名..."
+          emptyText="未找到分组"
+          allowClear
+          clearLabel="全部分组"
+        />
       </div>
       <div className="w-[200px]">
         <Label>用户</Label>
