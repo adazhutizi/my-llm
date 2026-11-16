@@ -15,13 +15,7 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { InlineCombobox } from '@/components/inline-combobox';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -312,26 +306,18 @@ export default function ModelsPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <Label htmlFor="provider">服务商</Label>
-                  <Select
+                  <InlineCombobox
+                    options={providers.map((p) => ({
+                      value: p.name,
+                      label: p.name,
+                      suffix: p.apiType === 'anthropic' ? 'Anthropic' : 'OpenAI',
+                    }))}
                     value={form.provider}
-                    onValueChange={(value) => setForm({ ...form, provider: value })}
-                  >
-                    <SelectTrigger id="provider">
-                      <SelectValue placeholder="选择服务商" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {providers.map((p) => (
-                        <SelectItem key={p.id} value={p.name}>
-                          <span className="flex items-center gap-2">
-                            {p.name}
-                            <span className={`text-xs ${p.apiType === 'anthropic' ? 'text-purple-500' : 'text-emerald-500'}`}>
-                              ({p.apiType === 'anthropic' ? 'Anthropic' : 'OpenAI'})
-                            </span>
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                    onChange={(v) => setForm({ ...form, provider: v })}
+                    placeholder="选择服务商"
+                    searchPlaceholder="搜索服务商..."
+                    emptyText="未找到服务商"
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="realModel">实际模型</Label>

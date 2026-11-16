@@ -25,13 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import {
-  Select,
-  SelectTrigger,
-  SelectContent,
-  SelectItem,
-  SelectValue,
-} from '@/components/ui/select';
+import { InlineCombobox } from '@/components/inline-combobox';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -377,20 +371,18 @@ export default function UsersPage() {
               className="pl-9"
             />
           </div>
-          <Select
-            value={filterGroupId == null ? 'all' : String(filterGroupId)}
-            onValueChange={(v) => { setFilterGroupId(v === 'all' ? null : Number(v)); setPage(1); }}
-          >
-            <SelectTrigger className="w-[180px]">
-              <SelectValue placeholder="全部分组" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">全部分组</SelectItem>
-              {groups.map((g) => (
-                <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <div className="w-[180px]">
+            <InlineCombobox
+              options={groups.map((g) => ({ value: String(g.id), label: g.name }))}
+              value={filterGroupId == null ? '' : String(filterGroupId)}
+              onChange={(v) => { setFilterGroupId(v ? Number(v) : null); setPage(1); }}
+              placeholder="全部分组"
+              searchPlaceholder="搜索分组名..."
+              emptyText="未找到分组"
+              allowClear
+              clearLabel="全部分组"
+            />
+          </div>
         </div>
 
         <DataTable
@@ -423,18 +415,16 @@ export default function UsersPage() {
               </div>
               <div className="space-y-2">
                 <Label>分组</Label>
-                <Select
-                  value={form.groupId == null ? 'none' : String(form.groupId)}
-                  onValueChange={(v) => setForm({ ...form, groupId: v === 'none' ? null : Number(v) })}
-                >
-                  <SelectTrigger><SelectValue placeholder="未归组" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">未归组</SelectItem>
-                    {groups.map((g) => (
-                      <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <InlineCombobox
+                  options={groups.map((g) => ({ value: String(g.id), label: g.name }))}
+                  value={form.groupId == null ? '' : String(form.groupId)}
+                  onChange={(v) => setForm({ ...form, groupId: v ? Number(v) : null })}
+                  placeholder="未归组"
+                  searchPlaceholder="搜索分组名..."
+                  emptyText="未找到分组"
+                  allowClear
+                  clearLabel="未归组"
+                />
               </div>
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setShowCreate(false)}>取消</Button>

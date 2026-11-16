@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
+import { InlineCombobox } from '@/components/inline-combobox';
 import { getGlobalRateLimit, updateGlobalRateLimit, getLogRetention, updateLogRetention, getSystemInfo, changePassword, listProviders, getUaPolicy } from '@/lib/api';
 import { RateLimitConfig, SystemInfo, Provider, UaPolicy } from '@/lib/types';
 import { tokensToMillions, millionsToTokens } from '@/lib/utils';
@@ -439,18 +439,16 @@ export default function SettingsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="analysisProvider">服务商</Label>
-                <Select
-                  value={analysisForm.provider || '__none__'}
-                  onValueChange={(v) => setAnalysisForm({ ...analysisForm, provider: v === '__none__' ? '' : v })}
-                >
-                  <SelectTrigger id="analysisProvider"><SelectValue placeholder="未配置" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">未配置</SelectItem>
-                    {providers.filter((p) => p.isActive).map((p) => (
-                      <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <InlineCombobox
+                  options={providers.filter((p) => p.isActive).map((p) => ({ value: p.name, label: p.name }))}
+                  value={analysisForm.provider}
+                  onChange={(v) => setAnalysisForm({ ...analysisForm, provider: v })}
+                  placeholder="未配置"
+                  searchPlaceholder="搜索服务商..."
+                  emptyText="未找到服务商"
+                  allowClear
+                  clearLabel="未配置"
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="analysisModel">模型名</Label>
@@ -508,18 +506,16 @@ export default function SettingsPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label htmlFor="agentProvider">服务商</Label>
-                <Select
-                  value={agentForm.provider || '__none__'}
-                  onValueChange={(v) => setAgentForm({ ...agentForm, provider: v === '__none__' ? '' : v })}
-                >
-                  <SelectTrigger id="agentProvider"><SelectValue placeholder="未配置" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">未配置</SelectItem>
-                    {providers.filter((p) => p.isActive && p.apiType === 'openai').map((p) => (
-                      <SelectItem key={p.id} value={p.name}>{p.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <InlineCombobox
+                  options={providers.filter((p) => p.isActive && p.apiType === 'openai').map((p) => ({ value: p.name, label: p.name }))}
+                  value={agentForm.provider}
+                  onChange={(v) => setAgentForm({ ...agentForm, provider: v })}
+                  placeholder="未配置"
+                  searchPlaceholder="搜索服务商..."
+                  emptyText="未找到服务商"
+                  allowClear
+                  clearLabel="未配置"
+                />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="agentModel">模型名</Label>

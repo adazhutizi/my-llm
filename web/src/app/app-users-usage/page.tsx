@@ -8,17 +8,11 @@ import { StatCard } from '@/components/stat-card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { InlineCombobox } from '@/components/inline-combobox';
 import { listApps, getAppUserUsage, getAppUsers, updateAppUser } from '@/lib/api';
 import type { App, AppUser, AppUserUsage } from '@/lib/types';
 import { Users, Zap, Send, Loader2, Pencil, Check, X, ScrollText, PieChart } from 'lucide-react';
-import { cn, beijingTodayStart, toBeijingDate } from '@/lib/utils';
+import { beijingTodayStart, toBeijingDate } from '@/lib/utils';
 
 function defaultDates() {
   // Beijing-day boundaries: the backend parses the naive date string as CST,
@@ -373,21 +367,18 @@ function AppUsersUsageContent() {
     <div className="space-y-6">
       {/* Filters */}
       <div className="flex flex-wrap items-end gap-4">
-        <div className="space-y-2">
+        <div className="space-y-2 w-[200px]">
           <Label>应用</Label>
-          <Select value={selectedAppId || '__all__'} onValueChange={(v) => setSelectedAppId(v === '__all__' ? '' : v)}>
-            <SelectTrigger className={cn('w-[200px]', !selectedAppId && 'text-muted-foreground')}>
-              <SelectValue placeholder="全部应用" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">全部应用</SelectItem>
-              {apps.map((app) => (
-                <SelectItem key={app.id} value={String(app.id)}>
-                  {app.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <InlineCombobox
+            options={apps.map((app) => ({ value: String(app.id), label: app.name }))}
+            value={selectedAppId}
+            onChange={(v) => setSelectedAppId(v)}
+            placeholder="全部应用"
+            searchPlaceholder="搜索应用名..."
+            emptyText="未找到应用"
+            allowClear
+            clearLabel="全部应用"
+          />
         </div>
 
         <div className="space-y-2">

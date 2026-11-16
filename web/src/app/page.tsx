@@ -18,13 +18,7 @@ import { DataTable } from '@/components/data-table';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import {
-  Select,
-  SelectTrigger,
-  SelectContent,
-  SelectItem,
-  SelectValue,
-} from '@/components/ui/select';
+import { InlineCombobox } from '@/components/inline-combobox';
 import { formatDateTime } from '@/lib/utils';
 import {
   LineChart,
@@ -577,23 +571,24 @@ export default function OverviewPage() {
               <h2 className="text-lg font-semibold">配额状态</h2>
               <div className="flex items-center gap-2">
                 {(groups.length > 0 || hasUsers || hasApps || hasKeys) && (
-                  <Select value={filter} onValueChange={setFilter}>
-                    <SelectTrigger className="h-8 w-[180px]">
-                      <SelectValue placeholder="全部" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">全部</SelectItem>
-                      {hasUsers && <SelectItem value="users">全部用户</SelectItem>}
-                      {hasApps && <SelectItem value="apps">全部应用</SelectItem>}
-                      {hasKeys && <SelectItem value="api_keys">全部密钥</SelectItem>}
-                      {groups.length > 0 && <SelectItem value="none">未归组</SelectItem>}
-                      {groups.map((g) => (
-                        <SelectItem key={g.id} value={`group:${g.id}`}>
-                          {g.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <div className="w-[180px]">
+                    <InlineCombobox
+                      options={[
+                        ...(hasUsers ? [{ value: 'users', label: '全部用户' }] : []),
+                        ...(hasApps ? [{ value: 'apps', label: '全部应用' }] : []),
+                        ...(hasKeys ? [{ value: 'api_keys', label: '全部密钥' }] : []),
+                        ...(groups.length > 0 ? [{ value: 'none', label: '未归组' }] : []),
+                        ...groups.map((g) => ({ value: `group:${g.id}`, label: g.name })),
+                      ]}
+                      value={filter === 'all' ? '' : filter}
+                      onChange={(v) => setFilter(v || 'all')}
+                      placeholder="全部"
+                      searchPlaceholder="搜索分组名..."
+                      emptyText="未找到"
+                      allowClear
+                      clearLabel="全部"
+                    />
+                  </div>
                 )}
                 <Button
                   variant="outline"
