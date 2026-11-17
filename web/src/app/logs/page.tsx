@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout';
 import { DataTable } from '@/components/data-table';
 import { MergeArrowsOverlay } from '@/components/logs-merge-arrows';
@@ -10,21 +10,11 @@ import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import { listLogs, getLogDetail, getLogFilterOptions, listUsers, listApiKeys, listApps, listUserGroups, archiveLogs, generateLogSummary } from '@/lib/api';
+import { listLogs, getLogDetail, getLogFilterOptions, listUsers, listApiKeys, listApps, listUserGroups, generateLogSummary } from '@/lib/api';
 import { RequestLog, RequestDetail, User, ApiKey, App, UserGroup, ApiError, LogSummaryMeta } from '@/lib/types';
 import { Loader2, Filter, ChevronDown, ChevronUp, ChevronLeft, ChevronRight } from 'lucide-react';
 import { formatDateTime, beijingTodayStart, toBeijingDateTimeLocal } from '@/lib/utils';
 import { redactForDisplay, extractImageSrcs } from '@/lib/log-display';
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogFooter,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogAction,
-  AlertDialogCancel,
-} from '@/components/ui/alert-dialog';
 
 function defaultDates() {
   // Beijing-day boundaries: the backend parses the naive datetime-local
@@ -37,11 +27,12 @@ function defaultDates() {
 }
 
 function LogsPageContent() {
-  // Read preset filters from the URL (?userId / ?apiKeyId) so deep links from
-  // other pages land on a pre-filtered view. useSearchParams forces this route
-  // to render client-side under static export, hence the <Suspense> boundary in
-  // the default export below.
+  // Read preset filters from the URL (?userId / ?apiKeyId / ?from / ?to) so
+  // deep links from other pages land on a pre-filtered view. useSearchParams
+  // forces this route to render client-side under static export, hence the
+  // <Suspense> boundary in the default export below.
   const searchParams = useSearchParams();
+  const router = useRouter();
   const defaults = defaultDates();
   const [logs, setLogs] = useState<RequestLog[]>([]);
   const [total, setTotal] = useState(0);
@@ -60,8 +51,8 @@ function LogsPageContent() {
     groupId: '',
     hideArchived: false,
   });
-  const [dateFrom, setDateFrom] = useState(defaults.dateFrom);
-  const [dateTo, setDateTo] = useState(defaults.dateTo);
+  const [dateFrom, setDateFrom] = useState(searchParams.get('from') ?? defaults.dateFrom);
+  const [dateTo, setDateTo] = useState(searchParams.get('to') ?? defaults.dateTo);
   const [selectedLog, setSelectedLog] = useState<RequestLog | null>(null);
   const [detail, setDetail] = useState<RequestDetail | null>(null);
   // images 生成响应里的图片（b64_json/url）——命中时详情对话框渲染缩略图网格
@@ -84,10 +75,6 @@ function LogsPageContent() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [apps, setApps] = useState<App[]>([]);
   const [groups, setGroups] = useState<UserGroup[]>([]);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [archiving, setArchiving] = useState(false);
-  const [archiveMsg, setArchiveMsg] = useState<{ text: string; kind: 'success' | 'error' } | null>(null);
-  const [includeToday, setIncludeToday] = useState(false);
 
   // —— 滚动固定过滤器（sticky 折叠条）——
   // 浏览下方日志时过滤器滚出视口，回顶改条件太慢：过滤器滚出后，在列表上方
@@ -173,8 +160,8 @@ function LogsPageContent() {
   }, [filters.groupId, filters.userId]);
 
   // Keep filters in sync when the URL query changes (e.g. jumping here from
-  // another entity's page with a different ?userId). Resets to page 1 so the
-  // new filter shows results from the top.
+  // /reports with a different ?userId or ?from/?to window). Resets to page 1
+  // so the new filter shows results from the top.
   useEffect(() => {
     const userId = searchParams.get('userId') ?? '';
     const apiKeyId = searchParams.get('apiKeyId') ?? '';
@@ -188,6 +175,10 @@ function LogsPageContent() {
         ? prev
         : { ...prev, userId, apiKeyId, appUserId, featureId, model, appId, provider },
     );
+    const from = searchParams.get('from');
+    const to = searchParams.get('to');
+    if (from) setDateFrom((prev) => (prev === from ? prev : from));
+    if (to) setDateTo((prev) => (prev === to ? prev : to));
     setPage(1);
   }, [searchParams]);
 
@@ -219,6 +210,27 @@ function LogsPageContent() {
   const handleFilter = () => {
     setPage(1);
     load();
+  };
+
+  // Deep-link to /reports carrying the fields /reports reads from the URL —
+  // the mirror of /reports's buildLogQuery. Entity filters travel both ways;
+  // the date window travels as ?from/?to (datetime-local, parsed as CST by
+  // both pages) so the report aggregates exactly the rows this list shows.
+  // status/groupId/path/UA/hideArchived are NOT read by /reports's URL preset,
+  // so omitting them matches what /reports would actually apply.
+  const handleGoReport = () => {
+    const p: Record<string, string> = {};
+    if (filters.model) p.model = filters.model;
+    if (filters.provider) p.provider = filters.provider;
+    if (filters.userId) p.userId = filters.userId;
+    if (filters.apiKeyId) p.apiKeyId = filters.apiKeyId;
+    if (filters.appId) p.appId = filters.appId;
+    if (filters.appUserId) p.appUserId = filters.appUserId;
+    if (filters.featureId) p.featureId = filters.featureId;
+    if (dateFrom) p.from = dateFrom;
+    if (dateTo) p.to = dateTo;
+    const query = new URLSearchParams(p).toString();
+    router.push(query ? `/reports?${query}` : '/reports');
   };
 
   const openDetail = async (log: RequestLog) => {
@@ -298,24 +310,6 @@ function LogsPageContent() {
       alert((e as ApiError).message);
     } finally {
       setSummaryLoading(false);
-    }
-  };
-
-  const handleArchive = async () => {
-    setArchiving(true);
-    try {
-      const stats = await archiveLogs(includeToday ? { retentionDays: 0 } : {});
-      setArchiveMsg({
-        text: `扫描 ${stats.scanned} 条，清理 ${stats.cleaned} 条冗余，保留 ${stats.kept} 条`,
-        kind: 'success',
-      });
-      setConfirmOpen(false);
-      load();
-    } catch (e) {
-      setArchiveMsg({ text: `归并失败：${(e as ApiError).message}`, kind: 'error' });
-      setConfirmOpen(false);
-    } finally {
-      setArchiving(false);
     }
   };
 
@@ -427,15 +421,10 @@ function LogsPageContent() {
             apps={apps}
             groups={groups}
             onFilter={handleFilter}
-            onArchive={() => setConfirmOpen(true)}
+            onReport={handleGoReport}
             onHideArchivedChange={() => setPage(1)}
           />
         </div>
-            {archiveMsg && (
-              <div className={`text-sm ${archiveMsg.kind === 'success' ? 'text-green-600' : 'text-red-600'}`}>
-                {archiveMsg.text}
-              </div>
-            )}
         {filterStuck && (
           // z-20：盖住表格滚动内容，同时低于移动端 sidebar 遮罩（z-30）/侧栏
           //（z-40）；表单内 Radix 弹层（z-50）仍在最上，下拉正常弹出。
@@ -470,7 +459,7 @@ function LogsPageContent() {
                       handleFilter();
                       setStickyExpanded(false);
                     }}
-                    onArchive={() => setConfirmOpen(true)}
+                    onReport={handleGoReport}
                     onHideArchivedChange={() => setPage(1)}
                   />
                 </div>
@@ -755,45 +744,6 @@ function LogsPageContent() {
             </div>
           </DialogContent>
         </Dialog>
-
-        <AlertDialog open={confirmOpen} onOpenChange={(open) => !archiving && setConfirmOpen(open)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>归并冗余请求详情？</AlertDialogTitle>
-              <AlertDialogDescription>
-                将归并较早的 loop 会话：每个会话只保留最完整的请求详情，被包含的前序请求体/响应体将被清空，用量统计不受影响。此操作不可撤销。
-                <br />
-                {includeToday
-                  ? '已勾选「包含当天」，将归并截止此刻的全部记录。'
-                  : '默认仅归并 1 天前的记录，当天数据保留。'}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <label className="flex items-center gap-2 text-sm cursor-pointer select-none py-1">
-              <input
-                id="includeToday"
-                type="checkbox"
-                checked={includeToday}
-                onChange={(e) => setIncludeToday(e.target.checked)}
-                disabled={archiving}
-                className="h-4 w-4"
-              />
-              <span>包含当天数据（归并截止此刻的全部记录）</span>
-            </label>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={archiving}>取消</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={(e) => {
-                  e.preventDefault();
-                  void handleArchive();
-                }}
-                disabled={archiving}
-              >
-                {archiving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                确认归并
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       </div>
   );
 }

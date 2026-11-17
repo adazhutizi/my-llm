@@ -93,8 +93,8 @@ function ReportsPageContent() {
     groupId: '',
     hideArchived: false,
   });
-  const [dateFrom, setDateFrom] = useState(defaults.dateFrom);
-  const [dateTo, setDateTo] = useState(defaults.dateTo);
+  const [dateFrom, setDateFrom] = useState(searchParams.get('from') ?? defaults.dateFrom);
+  const [dateTo, setDateTo] = useState(searchParams.get('to') ?? defaults.dateTo);
   const [granularity, setGranularity] = useState<ReportGranularity>('day');
 
   const [filterOptions, setFilterOptions] = useState<{ models: string[]; providers: string[] }>({ models: [], providers: [] });
@@ -138,7 +138,7 @@ function ReportsPageContent() {
   }, [filters.groupId, filters.userId]);
 
   // Keep filters in sync when the URL query changes (e.g. jumping here from
-  // another entity's page with a different ?userId).
+  // /logs with a different ?userId or ?from/?to window).
   useEffect(() => {
     const userId = searchParams.get('userId') ?? '';
     const apiKeyId = searchParams.get('apiKeyId') ?? '';
@@ -152,6 +152,10 @@ function ReportsPageContent() {
         ? prev
         : { ...prev, userId, apiKeyId, appUserId, featureId, model, appId, provider },
     );
+    const from = searchParams.get('from');
+    const to = searchParams.get('to');
+    if (from) setDateFrom((prev) => (prev === from ? prev : from));
+    if (to) setDateTo((prev) => (prev === to ? prev : to));
   }, [searchParams]);
 
   // Build the backend filter params from the current draft. Mirrors how /logs
@@ -221,7 +225,8 @@ function ReportsPageContent() {
   };
 
   // Deep-link to /logs carrying the fields /logs reads from the URL (entity
-  // filters — date/status/groupId/path/UA are NOT read by /logs's URL preset,
+  // filters + the date window as ?from/?to — the mirror of /logs's
+  // handleGoReport. status/groupId/path/UA are NOT read by /logs's URL preset,
   // so omitting them matches what /logs would actually apply).
   const buildLogQuery = () => {
     const p: Record<string, string> = {};
@@ -232,6 +237,8 @@ function ReportsPageContent() {
     if (filters.appId) p.appId = filters.appId;
     if (filters.appUserId) p.appUserId = filters.appUserId;
     if (filters.featureId) p.featureId = filters.featureId;
+    if (dateFrom) p.from = dateFrom;
+    if (dateTo) p.to = dateTo;
     return new URLSearchParams(p).toString();
   };
 

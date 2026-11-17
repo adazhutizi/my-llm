@@ -9,11 +9,21 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { InlineCombobox } from '@/components/inline-combobox';
-import { getGlobalRateLimit, updateGlobalRateLimit, getLogRetention, updateLogRetention, getSystemInfo, changePassword, listProviders, getUaPolicy } from '@/lib/api';
-import { RateLimitConfig, SystemInfo, Provider, UaPolicy } from '@/lib/types';
+import { getGlobalRateLimit, updateGlobalRateLimit, getLogRetention, updateLogRetention, getSystemInfo, changePassword, listProviders, getUaPolicy, archiveLogs } from '@/lib/api';
+import { RateLimitConfig, SystemInfo, Provider, UaPolicy, ApiError } from '@/lib/types';
 import { tokensToMillions, millionsToTokens } from '@/lib/utils';
 import { UaPolicyDialog } from '@/components/ua-policy-dialog';
-import { Loader2, Check, Save, Info, User, KeyRound, ShieldBan } from 'lucide-react';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogFooter,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
+import { Loader2, Check, Save, Info, User, KeyRound, ShieldBan, Archive } from 'lucide-react';
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -25,6 +35,31 @@ export default function SettingsPage() {
   const [logForm, setLogForm] = useState({ detailsRetentionDays: 30, logsRetentionDays: 180 });
   const [logSaving, setLogSaving] = useState(false);
   const [logSaved, setLogSaved] = useState(false);
+
+  // 手动归并（自 /logs 页过滤器迁来）：与每日定时归档同一逻辑，立即归并
+  // agentic loop 会话的冗余前序详情。默认仅处理 1 天前记录；勾选「包含
+  // 当天」后归并截止此刻的全部记录。
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveMsg, setArchiveMsg] = useState<{ text: string; kind: 'success' | 'error' } | null>(null);
+  const [includeToday, setIncludeToday] = useState(false);
+
+  const handleArchive = async () => {
+    setArchiving(true);
+    try {
+      const stats = await archiveLogs(includeToday ? { retentionDays: 0 } : {});
+      setArchiveMsg({
+        text: `扫描 ${stats.scanned} 条，清理 ${stats.cleaned} 条冗余，保留 ${stats.kept} 条`,
+        kind: 'success',
+      });
+      setConfirmOpen(false);
+    } catch (e) {
+      setArchiveMsg({ text: `归并失败：${(e as ApiError).message}`, kind: 'error' });
+      setConfirmOpen(false);
+    } finally {
+      setArchiving(false);
+    }
+  };
 
   // Log analysis: provider + real model name used by the "AI 小结" feature.
   // Empty until the admin configures it; the summary endpoint refuses with 400.
@@ -430,6 +465,29 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
+            <CardTitle>日志归并</CardTitle>
+            <CardDescription>
+              立即归并 agentic loop 会话的冗余请求详情（与每日定时归档同一逻辑）：每个会话只保留最完整的请求详情，被包含的前序请求体/响应体将被清空，用量统计不受影响。默认仅归并 1 天前的记录，当天数据保留。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Button variant="destructive" onClick={() => setConfirmOpen(true)}>
+                <Archive className="mr-2 h-4 w-4" />
+                立即归并
+              </Button>
+              <span className="text-xs text-muted-foreground">操作不可撤销，执行前会弹出确认。</span>
+            </div>
+            {archiveMsg && (
+              <p className={`text-sm ${archiveMsg.kind === 'success' ? 'text-green-600' : 'text-red-600'}`}>
+                {archiveMsg.text}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
             <CardTitle>日志分析</CardTitle>
             <CardDescription>
               配置用于「AI 小结」的大模型（建议 1M 窗口小模型，如 Gemini 2.5 Flash / qwen-long / GLM-4-Long）。需先在「服务商」页配置对应上游。
@@ -676,6 +734,46 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 归并确认对话框（「日志归并」卡片触发，Radix Portal 渲染在 body） */}
+      <AlertDialog open={confirmOpen} onOpenChange={(open) => !archiving && setConfirmOpen(open)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>归并冗余请求详情？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将归并较早的 loop 会话：每个会话只保留最完整的请求详情，被包含的前序请求体/响应体将被清空，用量统计不受影响。此操作不可撤销。
+              <br />
+              {includeToday
+                ? '已勾选「包含当天」，将归并截止此刻的全部记录。'
+                : '默认仅归并 1 天前的记录，当天数据保留。'}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="flex items-center gap-2 text-sm cursor-pointer select-none py-1">
+            <input
+              id="includeToday"
+              type="checkbox"
+              checked={includeToday}
+              onChange={(e) => setIncludeToday(e.target.checked)}
+              disabled={archiving}
+              className="h-4 w-4"
+            />
+            <span>包含当天数据（归并截止此刻的全部记录）</span>
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={archiving}>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void handleArchive();
+              }}
+              disabled={archiving}
+            >
+              {archiving && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+              确认归并
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </AppLayout>
   );
 }

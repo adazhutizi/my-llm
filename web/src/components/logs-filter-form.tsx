@@ -4,7 +4,7 @@ import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { InlineCombobox } from '@/components/inline-combobox';
-import { Search, Archive } from 'lucide-react';
+import { Search, BarChart3 } from 'lucide-react';
 import type { User, ApiKey, App, UserGroup } from '@/lib/types';
 
 /** 请求日志页过滤器状态形状（logs/page.tsx 持有 state，此组件纯受控）。 */
@@ -36,7 +36,8 @@ interface LogsFilterFormProps {
   apps: App[];
   groups: UserGroup[];
   onFilter: () => void;
-  onArchive: () => void;
+  // 跳转 /reports 并携带当前过滤条件（归并操作已移至系统设置页）。
+  onReport: () => void;
   // 「归并」复选框改变即生效（不经「筛选」按钮），父级借此重置页码到 1。
   onHideArchivedChange?: () => void;
 }
@@ -59,7 +60,7 @@ export function LogsFilterForm({
   apps,
   groups,
   onFilter,
-  onArchive,
+  onReport,
   onHideArchivedChange,
 }: LogsFilterFormProps) {
   return (
@@ -211,9 +212,9 @@ export function LogsFilterForm({
           <Search className="h-4 w-4 mr-2" />
           筛选
         </Button>
-        <Button variant="destructive" onClick={onArchive}>
-          <Archive className="h-4 w-4 mr-2" />
-          归并
+        <Button variant="outline" onClick={onReport}>
+          <BarChart3 className="h-4 w-4 mr-2" />
+          报表
         </Button>
       </div>
     </div>
